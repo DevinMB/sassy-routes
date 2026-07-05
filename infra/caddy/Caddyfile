@@ -1,0 +1,22 @@
+# Edge proxy — the single public entrypoint for the stack.
+# TLS is intentionally off here: locally we serve plain HTTP on :80 (mapped to
+# host :8080), and in production the Cloudflare tunnel terminates TLS and
+# connects to http://caddy:80. Auth / rate limiting hooks in at this seam later
+# (rate limiting via Cloudflare once the tunnel is live).
+
+{
+	auto_https off
+	admin off
+}
+
+:80 {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		reverse_proxy frontend:80
+	}
+}

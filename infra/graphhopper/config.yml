@@ -1,0 +1,46 @@
+# GraphHopper 9.x config — Phase 1: fastest baseline via CH (instant), fun
+# candidates via per-request custom models on the LM-prepared profile.
+# Custom models only PENALIZE (priority multipliers ≤ 1), which keeps landmark
+# estimates admissible — never "reward" edges below base weight.
+
+graphhopper:
+  datareader.file: /data/osm/michigan-latest.osm.pbf
+  graph.location: /data/graph-cache
+
+  # car-only graph; skip pedestrian/bike-only ways entirely
+  import.osm.ignored_highways: footway,cycleway,path,pedestrian,steps
+
+  # Encoded values available to custom models and path details.
+  # Changing this list requires a graph reimport (`make clean-graph && make up`).
+  # curvature: beeline/real length per edge (1.0 = straight).
+  # average_slope/max_slope come from SRTM elevation (imported now so a future
+  # elevation-aware routing model won't need another reimport).
+  # osm_way_id enables the osm_way_id path detail (fun-index lookup per route).
+  graph.encoded_values: car_access, car_average_speed, road_class, surface, curvature, average_slope, max_slope, osm_way_id
+
+  # SRTM elevation, cached outside the graph dir so `make clean-graph`
+  # doesn't force a re-download of tiles.
+  graph.elevation.provider: srtm
+  graph.elevation.cache_dir: /data/elevation-cache
+
+  profiles:
+    - name: car
+      custom_model_files: [car.json]   # stock car model bundled with GH
+
+  profiles_ch:
+    - profile: car
+
+  # Landmarks: fast flexible routing for per-request custom models (fun dial).
+  profiles_lm:
+    - profile: car
+
+server:
+  application_connectors:
+    - type: http
+      port: 8989
+      bind_host: 0.0.0.0
+  admin_connectors:
+    - type: http
+      port: 8990
+  request_log:
+    appenders: []

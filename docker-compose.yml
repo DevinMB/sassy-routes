@@ -1,0 +1,105 @@
+name: sassy-routes
+
+services:
+  # Edge reverse proxy. This is the single public entrypoint — the Cloudflare
+  # tunnel (when enabled) points at http://caddy:80. Rate limiting will live at
+  # the Cloudflare layer once the tunnel is up; stock Caddy has no built-in
+  # rate limiter (would need an xcaddy build).
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - frontend
+      - backend
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      APEX_GRAPHHOPPER_URL: http://graphhopper:8989
+      APEX_ALLOWED_ORIGINS: ${APEX_ALLOWED_ORIGINS:-http://localhost:8080}
+      APEX_MAX_ROUTE_DISTANCE_KM: ${APEX_MAX_ROUTE_DISTANCE_KM:-500}
+      APEX_COUCHDB_URL: http://${COUCHDB_USER:-apex}:${COUCHDB_PASSWORD:?set COUCHDB_PASSWORD in .env}@couchdb:5984
+    volumes:
+      - ./scoring.yaml:/srv/scoring.yaml:ro
+    depends_on:
+      - graphhopper
+      - couchdb
+
+  # First start imports the OSM extract into a graph (~5-15 min for Michigan,
+  # watch `docker compose logs -f graphhopper`). Subsequent starts load the
+  # cached graph from ./data/graph-cache in seconds. After replacing the
+  # extract, run `make clean-graph` to force a reimport.
+  graphhopper:
+    image: israelhikingmap/graphhopper:9.1
+    restart: unless-stopped
+    # -o is required: the image's entrypoint derives its own graph location
+    # (/data/default-gh, inside the image's anonymous /data volume) unless told
+    # otherwise — it overrides graph.location from the config file.
+    command: ["-c", "/gh-config/config.yml", "-i", "/data/osm/michigan-latest.osm.pbf", "-o", "/data/graph-cache"]
+    environment:
+      JAVA_OPTS: "-Xmx${GH_JAVA_XMX:-4g} -Xms1g"
+    volumes:
+      - ./infra/graphhopper/config.yml:/gh-config/config.yml:ro
+      - ./data/osm:/data/osm:ro
+      - ./data/graph-cache:/data/graph-cache
+      - ./data/elevation:/data/elevation-cache
+    ports:
+      # localhost-only, for poking the GH API / web UI directly while debugging
+      - "127.0.0.1:8989:8989"
+
+  # Not consumed by the backend until Phase 1 (segment scores + route cache),
+  # but part of the stack from day one so volumes/creds are settled early.
+  couchdb:
+    image: couchdb:3.4
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER:-apex}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD:?set COUCHDB_PASSWORD in .env}
+    volumes:
+      - ./data/couchdb:/opt/couchdb/data
+    ports:
+      # localhost-only, for Fauxton admin UI at http://127.0.0.1:5984/_utils
+      - "127.0.0.1:5984:5984"
+
+  # Offline segment scorer (Phase 1). Not part of `up` — run on demand:
+  #   make pipeline    (full Michigan run: ~10-30 min, rebuilds `segments` db)
+  pipeline:
+    build: ./pipeline
+    profiles: ["pipeline"]
+    environment:
+      APEX_COUCHDB_URL: http://${COUCHDB_USER:-apex}:${COUCHDB_PASSWORD:?set COUCHDB_PASSWORD in .env}@couchdb:5984
+      APEX_SCORING_PATH: /srv/scoring.yaml
+      APEX_OSM_PBF: /data/osm/michigan-latest.osm.pbf
+      APEX_SRTM_CACHE: /data/srtm
+    volumes:
+      - ./scoring.yaml:/srv/scoring.yaml:ro
+      - ./data/osm:/data/osm:ro
+      - ./data/srtm:/data/srtm
+    depends_on:
+      - couchdb
+
+  # --- Cloudflare tunnel (enable when ready to expose a hosted URL) ---
+  # 1. Create a tunnel in Cloudflare Zero Trust → Networks → Tunnels.
+  # 2. Set the public hostname's service to http://caddy:80.
+  # 3. Put TUNNEL_TOKEN in .env and uncomment:
+  #
+  # cloudflared:
+  #   image: cloudflare/cloudflared:latest
+  #   restart: unless-stopped
+  #   command: tunnel --no-autoupdate run
+  #   environment:
+  #     TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
+  #   depends_on:
+  #     - caddy
+
+  # Kafka is deferred to Phase 3 (offline pipeline + apex.events analytics).
+  # Guardrail: it must never sit in the user-facing routing path.

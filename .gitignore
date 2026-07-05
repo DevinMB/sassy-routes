@@ -1,1 +1,20 @@
+# secrets & local-only docs
 .env
+CLAUDE-ref.md
+CLAUDE.md
+
+# runtime data (OSM extracts, graph cache, couchdb) — never commit
+data/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# node
+node_modules/
+dist/
+
+# editor/os noise
+.DS_Store

@@ -1,0 +1,123 @@
+# Fun-scoring model config — the single home for every weight and threshold
+# (guardrail 5: no magic numbers in code). Version-controlled so model changes
+# are reviewable. Consumed by:
+#   - /pipeline (offline segment scoring into CouchDB)
+#   - /backend  (per-lambda GraphHopper custom models, candidate shaping)
+# Values are provisional; tune with real drives.
+version: 1
+
+# ---------------------------------------------------------------------------
+# Offline segment scoring (pipeline → CouchDB `segments`)
+# fun_index = blend(curvature, elevation, road_class) × surface_gate × safety_gate
+# ---------------------------------------------------------------------------
+
+curvature:
+  # Interior vertices are binned by angular change per 100 m of local length.
+  # Each bin contributes weight × local length; score = Σ / total length.
+  bins:
+    straight: { max_deg_per_100m: 5,    weight: 0.0 }
+    gentle:   { max_deg_per_100m: 15,   weight: 0.2 }
+    sweeper:  { max_deg_per_100m: 45,   weight: 1.0 }
+    tight:    { max_deg_per_100m: 90,   weight: 0.9 }
+    hairpin:  { max_deg_per_100m: .inf, weight: 0.4 }
+
+conflict_points:
+  # Vertices within this distance (along the way) of a junction node
+  # contribute ZERO curvature — a curve at a blind driveway/intersection is a
+  # hazard, not fun (roadcurvature.com insight).
+  radius_m: 30
+
+elevation:
+  # Relief (total |Δelevation| per km) earns up to 1.0 at full_score_m_per_km.
+  relief_full_score_m_per_km: 15
+  # Sustained steep grade (> grade_pct over > length_m) caps the component.
+  sustained_steep: { grade_pct: 9, length_m: 500, component_cap: 0.3 }
+  # Grades are clipped to ±max_grade_pct before stats (SRTM noise guard).
+  max_grade_pct: 30
+
+road_class:
+  # Component score per OSM highway value (links inherit their parent).
+  tertiary: 1.0
+  unclassified: 0.9
+  secondary: 0.85
+  primary: 0.45
+  trunk: 0.1
+  motorway: 0.0
+  residential: 0.05
+  living_street: 0.0
+  service: 0.0
+  road: 0.3
+
+surface:
+  # Multiplicative gate. Low sports car (Miata ND): unpaved kills the score.
+  unpaved_values: [gravel, fine_gravel, unpaved, compacted, dirt, ground,
+                   earth, grass, sand, mud, pebblestone, wood, cobblestone,
+                   unhewn_cobblestone, woodchips]
+  unpaved_multiplier: 0.02
+  # No surface tag: mostly fine on classified rural roads, slight discount.
+  unknown_multiplier: 0.9
+
+safety:
+  # Multiplicative gate — dangerous geometry must score DOWN (guardrail 4).
+  # Dense access points (junctions+driveways) near curves = blind-driveway risk.
+  junction_density_per_km_threshold: 8
+  dense_access_multiplier: 0.5
+  # Tight/hairpin-heavy geometry on low-limit roads: goat-path penalty.
+  low_speed_limit_kmh: 45
+  tight_fraction_threshold: 0.35
+  low_limit_tight_multiplier: 0.5
+
+blend:
+  # Weights over component scores (should sum to 1).
+  curvature: 0.60
+  elevation: 0.15
+  road_class: 0.25
+
+runtime:
+  # Fun index assumed for route intervals whose way has no CouchDB doc
+  # (unscored/missing) when length-weighting a route's fun index.
+  default_fun_index: 0.25
+
+# ---------------------------------------------------------------------------
+# Online routing (backend → GraphHopper custom models)
+# ---------------------------------------------------------------------------
+
+gh_custom_model:
+  # Per-lambda priority penalties. Effective factor at fun dial λ is
+  #   1 - λ·(1 - factor)   (λ=0 → 1.0 / no effect; λ=1 → factor).
+  # Factors must stay ≤ 1 (penalize boring, never reward) — required for
+  # landmark-search admissibility and by guardrail 4.
+  priority:
+    - name: boring_highways
+      condition: "road_class == MOTORWAY || road_class == TRUNK"
+      factor: 0.25
+    - name: conflict_prone       # driveways, stop signs, blind access
+      condition: "road_class == RESIDENTIAL || road_class == SERVICE || road_class == LIVING_STREET"
+      factor: 0.30
+    - name: traffic_primary
+      condition: "road_class == PRIMARY"
+      factor: 0.60
+    - name: straight_edges       # curvature: 1.0 = perfectly straight
+      condition: "curvature > 0.995"
+      factor: 0.55
+    - name: mostly_straight
+      condition: "curvature > 0.98"
+      factor: 0.80
+  # Lambda-independent hard penalties (applied whenever λ > 0).
+  always:
+    - name: unpaved_no_thanks    # Miata rule
+      condition: "surface == GRAVEL || surface == FINE_GRAVEL || surface == UNPAVED || surface == COMPACTED || surface == DIRT || surface == GROUND || surface == GRASS || surface == SAND || surface == COBBLESTONE || surface == WOOD || surface == OTHER"
+      factor: 0.10
+
+routing:
+  # Fun dial values for the candidate routes (fastest λ=0 is always computed).
+  candidate_lambdas: [0.3, 0.6, 0.9]
+  # Never return a 3-hour detour for a 20-minute errand.
+  max_time_multiplier: 2.0
+  # Candidates within these tolerances of an already-kept route are dropped.
+  dedupe: { time_s: 30, distance_m: 200 }
+
+cache:
+  route_ttl_seconds: 86400
+  # Origin/destination snapped to a grid cell for cache keys (~550 m).
+  cell_size_deg: 0.005
