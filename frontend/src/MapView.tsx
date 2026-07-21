@@ -21,8 +21,9 @@ interface Props {
 const INITIAL_CENTER: [number, number] = [43.9, -84.8]
 const INITIAL_ZOOM = 7
 
-const SELECTED_STYLE = { color: '#1565c0', weight: 5, opacity: 0.95 }
-const UNSELECTED_STYLE = { color: '#78909c', weight: 4, opacity: 0.6 }
+// matches --accent in index.css so the chosen route reads as "the fun one"
+const SELECTED_STYLE = { color: '#e2590b', weight: 6, opacity: 0.95 }
+const UNSELECTED_STYLE = { color: '#7b8b98', weight: 4, opacity: 0.55 }
 
 export default function MapView({
   origin,
@@ -89,7 +90,13 @@ export default function MapView({
       const bounds = routeLinesRef.current
         .map((l) => l.getBounds())
         .reduce((a, b) => a.extend(b))
-      map.fitBounds(bounds, { padding: [40, 40] })
+      // keep the route clear of the panel: side card on desktop, bottom sheet
+      // on mobile, so the padding has to move with the layout
+      const sheet = window.matchMedia('(max-width: 640px)').matches
+      map.fitBounds(bounds, {
+        paddingTopLeft: sheet ? [30, 30] : [360, 40],
+        paddingBottomRight: sheet ? [30, Math.round(window.innerHeight * 0.55)] : [40, 40],
+      })
     }
   }, [routes])
 

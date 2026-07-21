@@ -1,43 +1,115 @@
+:root {
+  --ink: #16202a;
+  --muted: #5b6b7a;
+  --faint: #8a99a6;
+  --line: #dfe5ea;
+  --surface: #ffffff;
+  --surface-sunk: #f4f7f9;
+  /* warm accent — corners, heat, the fun end of the dial */
+  --accent: #e2590b;
+  --accent-deep: #b8430a;
+  --accent-soft: #fff3ea;
+  --accent-line: #f6c9a8;
+  --good: #2e7d32;
+  --warn-bg: #fff4e0;
+  --warn-ink: #8a5100;
+  --danger: #b3261e;
+  --radius: 12px;
+  --shadow: 0 6px 24px rgba(16, 32, 42, 0.16);
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root {
   height: 100%;
   margin: 0;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
 }
 
 .map { height: 100%; }
 
+/* ---------------------------------------------------------------- panel --
+   Desktop: floating card on the left. Mobile: bottom sheet (see @media). */
+
 .panel {
   position: absolute;
-  top: 12px;
-  left: 12px;
+  top: 14px;
+  left: 14px;
   z-index: 1100; /* above leaflet panes */
-  width: 300px;
-  padding: 14px 16px;
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.95);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.25);
+  width: 330px;
+  max-height: calc(100vh - 28px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px 18px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
   font-size: 14px;
 }
 
-.panel h1 {
-  margin: 0 0 6px;
-  font-size: 17px;
+.panel-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 2px;
 }
 
-.panel .hint { color: #555; margin: 4px 0; }
+.panel h1 {
+  margin: 0;
+  font-size: 19px;
+  letter-spacing: -0.015em;
+}
+.panel h1 em {
+  font-style: italic;
+  color: var(--accent);
+}
 
-.search { position: relative; margin: 6px 0; }
+.tagline {
+  margin: 0 0 12px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.panel .hint { color: var(--muted); margin: 6px 0; }
+
+.panel .error {
+  margin: 10px 0 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fdeceb;
+  color: var(--danger);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* drag handle + collapsed summary: mobile sheet only (see @media) */
+.grab-zone { display: none; }
+.grabber { display: none; }
+.peek { display: none; }
+
+/* --------------------------------------------------------------- search -- */
+
+.search { position: relative; margin: 7px 0; }
 
 .search input {
   width: 100%;
-  padding: 7px 9px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  font-size: 13px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-sunk);
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--ink);
 }
-.search input:focus { outline: 2px solid #1565c0; border-color: transparent; }
+.search input::placeholder { color: var(--faint); }
+.search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 
 .search-results {
   position: absolute;
@@ -45,110 +117,331 @@ html, body, #root {
   left: 0;
   right: 0;
   z-index: 10;
-  margin: 2px 0 0;
-  padding: 0;
+  margin: 4px 0 0;
+  padding: 4px;
   list-style: none;
-  background: #fff;
-  border: 1px solid #ddd;
-  border-radius: 6px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.15);
-  max-height: 220px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  max-height: 240px;
   overflow-y: auto;
 }
 .search-results li {
-  padding: 7px 9px;
+  padding: 8px 9px;
+  border-radius: 7px;
   font-size: 13px;
   cursor: pointer;
 }
-.search-results li:hover { background: #eef4fc; }
+.search-results li:hover { background: var(--accent-soft); }
 
 .panel button.locate {
-  margin: 0 0 2px;
-  padding: 3px 8px;
+  margin: 0 0 4px;
+  padding: 2px 0;
   font-size: 12px;
+  font-family: inherit;
   border: none;
   background: none;
-  color: #1565c0;
+  color: var(--accent);
   cursor: pointer;
 }
-.panel button.locate:hover { text-decoration: underline; background: none; }
-.panel button.locate:disabled { color: #999; cursor: default; }
+.panel button.locate:hover { text-decoration: underline; }
+.panel button.locate:disabled { color: var(--faint); cursor: default; }
+
+/* ----------------------------------------------------------- candidates -- */
 
 .candidates {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin: 8px 0 4px;
+  gap: 8px;
+  margin: 12px 0 4px;
 }
 
 .panel button.candidate {
   display: block;
   width: 100%;
   margin: 0;
-  padding: 8px 10px;
+  padding: 10px 12px;
   text-align: left;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  background: #fafafa;
+  font-family: inherit;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
   cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, transform 0.12s;
 }
-.panel button.candidate:hover { background: #f0f4f8; }
+.panel button.candidate:hover { border-color: var(--accent-line); }
+.panel button.candidate:active { transform: scale(0.995); }
 .panel button.candidate.selected {
-  border-color: #1565c0;
-  background: #e8f1fb;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 1px var(--accent) inset;
 }
 
 .candidate-head {
   display: flex;
   justify-content: space-between;
-  font-weight: 600;
-  font-size: 13px;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
 }
-.candidate-time em { color: #b26a00; font-style: normal; font-weight: 600; }
+.candidate-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.candidate-time em {
+  color: var(--accent-deep);
+  font-style: normal;
+  font-weight: 650;
+}
 
 .candidate-sub {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 4px;
+  gap: 9px;
+  margin-top: 7px;
   font-size: 12px;
-  color: #555;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .funmeter {
   flex: 1;
-  height: 6px;
-  border-radius: 3px;
-  background: #e0e0e0;
+  height: 7px;
+  border-radius: 4px;
+  background: #e6ebef;
   overflow: hidden;
 }
 .funbar {
   display: block;
   height: 100%;
-  border-radius: 3px;
-  background: linear-gradient(90deg, #66bb6a, #2e7d32);
+  border-radius: 4px;
+  background: linear-gradient(90deg, #f2a03d, var(--accent));
+  transition: width 0.35s ease;
 }
 
-.panel .error {
-  margin: 8px 0 4px;
-  color: #b00020;
+/* peak-seeking: routed through one standout road */
+.sought {
+  display: block;
+  margin-top: 7px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: #eaf5ea;
+  color: #245c27;
+  font-size: 11.5px;
+  line-height: 1.45;
 }
+.candidate.selected .sought { background: #e0efe1; }
 
-.panel button {
+/* the five scoring criteria behind each option's fun index */
+.criteria {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   margin-top: 8px;
-  padding: 5px 12px;
-  border: 1px solid #bbb;
-  border-radius: 6px;
-  background: #f6f6f6;
+}
+
+.criteria .chip {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: var(--surface-sunk);
+  color: var(--muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.criteria .chip b { color: var(--ink); font-weight: 650; }
+
+/* a gate that actually subtracted — surface or safety */
+.criteria .chip.flag { background: #fdeceb; color: #9a3d33; }
+.criteria .chip.flag b { color: #8a2f26; }
+
+.candidate.selected .criteria .chip { background: #fbe6d6; }
+.candidate.selected .criteria .chip.flag { background: #fbdcd8; }
+
+.criteria-note {
+  display: block;
+  margin-top: 5px;
+  color: var(--faint);
+  font-size: 10px;
+}
+
+/* ------------------------------------------------------------- handoff -- */
+
+.handoff { margin: 12px 0 2px; }
+
+.handoff .open-maps {
+  display: block;
+  padding: 11px 12px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  text-align: center;
+  text-decoration: none;
+  font-weight: 650;
+  font-size: 14.5px;
+  letter-spacing: -0.01em;
+}
+.handoff .open-maps:hover { background: var(--accent-deep); }
+
+.handoff .warn {
+  margin: 9px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--warn-bg);
+  color: var(--warn-ink);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.panel button.gpx,
+.panel button.clear {
+  margin-top: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+  font-family: inherit;
+  border: none;
+  background: none;
+  color: var(--accent);
   cursor: pointer;
 }
-.panel button:hover { background: #ececec; }
+.panel button.gpx:hover,
+.panel button.clear:hover { text-decoration: underline; }
+.panel button.clear { color: var(--muted); }
+
+/* -------------------------------------------------------------- legend -- */
+
+.legend {
+  margin-top: 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.legend summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-size: 12px;
+  user-select: none;
+}
+.legend summary:hover { text-decoration: underline; }
+
+.legend dl {
+  margin: 9px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-sunk);
+}
+.legend dt {
+  margin-top: 8px;
+  font-weight: 650;
+  color: var(--ink);
+}
+.legend dt:first-child { margin-top: 0; }
+.legend dd { margin: 2px 0 0; line-height: 1.45; }
+
+.legend > p {
+  margin: 9px 0 0;
+  line-height: 1.45;
+  color: var(--faint);
+}
 
 .panel .fineprint {
-  margin-top: 10px;
-  padding-top: 8px;
-  border-top: 1px solid #e0e0e0;
-  color: #777;
-  font-size: 11px;
-  line-height: 1.4;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+.panel .fineprint a { color: var(--muted); }
+
+/* --------------------------------------------------- mobile bottom sheet --
+   Below 640px the panel stops floating over the map and becomes a sheet
+   anchored to the bottom, which is where a thumb actually reaches. */
+
+@media (max-width: 640px) {
+  /* --peek must match PEEK_PX in useSheet.ts */
+  .panel {
+    --peek: 92px;
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 72vh;
+    padding: 0 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    border-radius: 18px 18px 0 0;
+    box-shadow: 0 -6px 24px rgba(16, 32, 42, 0.18);
+    -webkit-overflow-scrolling: touch;
+    transition: transform 0.3s cubic-bezier(0.32, 0.8, 0.4, 1);
+  }
+
+  /* dragged down out of the way so you can actually look at the route */
+  .panel.collapsed {
+    transform: translateY(calc(100% - var(--peek)));
+    overflow: hidden;
+  }
+  .panel.dragging { transition: none; }
+
+  /* generous touch target around the little pill */
+  .grab-zone {
+    display: block;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    margin: 0 -16px;
+    padding: 10px 16px 6px;
+    background: var(--surface);
+    border-radius: 18px 18px 0 0;
+    cursor: grab;
+    touch-action: none; /* we handle the gesture ourselves */
+  }
+  .grab-zone:active { cursor: grabbing; }
+
+  .grabber {
+    display: block;
+    width: 40px;
+    height: 4px;
+    margin: 0 auto;
+    border-radius: 2px;
+    background: #cbd5dc;
+  }
+
+  /* collapsed summary — tap anywhere on it to bring the sheet back up */
+  .peek {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    margin: 8px 0 4px;
+    padding: 0;
+    border: none;
+    background: none;
+    font-family: inherit;
+    text-align: left;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  .peek-name { font-size: 14px; font-weight: 650; letter-spacing: -0.01em; }
+  .peek-stats {
+    font-size: 12.5px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .peek-stats em { color: var(--accent-deep); font-style: normal; font-weight: 650; }
+
+  /* the peek line is the collapsed view; expanded, the cards already say it */
+  .panel:not(.collapsed) .peek { display: none; }
+
+  /* 16px keeps iOS from zooming the viewport on focus */
+  .search input { font-size: 16px; }
+
+  .handoff .open-maps { padding: 13px 12px; font-size: 15px; }
+  .panel button.candidate { padding: 11px 12px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
 }

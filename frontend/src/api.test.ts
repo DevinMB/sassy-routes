@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fetchRoute, geocode } from './api'
+import { fetchRoute, geocode, postEvent } from './api'
+import { routeToGpx } from './gpx'
 
 const origin = { lat: 42.281, lng: -83.743 }
 const destination = { lat: 42.331, lng: -83.046 }
@@ -39,6 +40,12 @@ describe('fetchRoute', () => {
     ))
     await expect(fetchRoute(origin, destination)).rejects.toThrow('too far apart')
   })
+
+  it('explains a bodyless 502 from the proxy instead of showing a bare code', async () => {
+    // Caddy answers with no JSON body while the backend restarts
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
+    await expect(fetchRoute(origin, destination)).rejects.toThrow(/restarting/)
+  })
 })
 
 describe('geocode', () => {
@@ -60,5 +67,23 @@ describe('geocode', () => {
       new Response(JSON.stringify({ detail: 'geocoder is unreachable' }), { status: 502 }),
     ))
     await expect(geocode('traverse city')).rejects.toThrow('geocoder is unreachable')
+  })
+})
+
+describe('postEvent', () => {
+  it('fires and swallows failures', async () => {
+    const mock = vi.fn().mockRejectedValue(new Error('offline'))
+    vi.stubGlobal('fetch', mock)
+    expect(() => postEvent({ type: 'maps_opened', fun_dial: 0.6 })).not.toThrow()
+    expect(mock).toHaveBeenCalledWith('/api/events', expect.objectContaining({ method: 'POST' }))
+  })
+})
+
+describe('routeToGpx', () => {
+  it('emits valid trackpoints in lat/lon order', () => {
+    const gpx = routeToGpx([[-84.5, 42.25], [-84.4, 42.3]], 'test <route>')
+    expect(gpx).toContain('<trkpt lat="42.250000" lon="-84.500000"/>')
+    expect(gpx).toContain('<name>test &lt;route&gt;</name>')
+    expect(gpx).toContain('xmlns="http://www.topografix.com/GPX/1/1"')
   })
 })
