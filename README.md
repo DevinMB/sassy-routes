@@ -145,10 +145,25 @@ check each link against the Google Directions API (`via:` waypoints) and
 insert extra waypoints where Google's interpretation diverges.
 
 All weights/thresholds live in [`scoring.yaml`](scoring.yaml) —
-version-controlled, no magic numbers in code (bump `version` when tuning so
-cached routes invalidate). After changing the `gh_custom_model` section only,
-restart the backend; after changing pipeline weights, `make pipeline &&
-make import-graph` (the graph carries the scores).
+version-controlled, no magic numbers in code.
+
+### After editing scoring.yaml
+
+```sh
+make retune
+```
+
+That's the whole answer. Some sections (`curvature`, `elevation`,
+`road_class`, `surface`, `safety`, `blend`, `conflict_points`) change every
+road's stored score, so they need a rescore and a graph rebuild — about 15
+minutes, with the site up throughout. The rest are read live and only need a
+backend restart, which takes a second. `make retune` hashes the
+score-affecting sections, compares against the last rescore, and does only
+what's actually required; `FORCE=1 make retune` does everything regardless.
+
+The backend restart is not optional even for a config-only edit: `scoring()`
+is cached for the process lifetime, so an edit without a restart changes
+nothing. Cached *routes* invalidate themselves — their key hashes the file.
 
 ## Roadmap
 

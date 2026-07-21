@@ -200,8 +200,25 @@ seek:
   min_length_m: 250
   # Seek targets to try routing through (each costs one routing call).
   max_targets: 3
-  # Drop the seek candidate if it costs more than this multiple of fastest time.
+  # Hard ceiling: drop the seek candidate if it costs more than this multiple
+  # of the fastest route's time, however good the road.
   max_time_multiplier: 2.5
+
+  # --- ranking -------------------------------------------------------------
+  # Which targets are worth *trying*, best first. Ranking on fun alone made a
+  # short gem far off the corridor beat a long great road right on it.
+  # value = fun × min(length, length_cap) ÷ (1 + off_corridor_km / half_km)
+  # Beyond length_cap extra metres stop multiplying (one enormous road
+  # shouldn't crowd out everything else); at half_km off the line a target is
+  # worth half as much.
+  length_cap_m: 3000
+  corridor_half_km: 3.0
+
+  # A detour has to be EARNED by the road, not merely fit under the ceiling.
+  # Allowed extra time ≈ this × km of road × its fun index, so a 900 m road at
+  # 0.93 buys about 10 minutes. Measured motivation: seek offered +35 min on a
+  # 50 min trip for one 902 m road, which is not a trade a driver wants.
+  detour_minutes_per_km: 12
 
 cache:
   route_ttl_seconds: 86400

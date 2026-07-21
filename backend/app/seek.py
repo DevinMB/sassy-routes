@@ -74,8 +74,32 @@ def rank_targets(rows: list[dict], origin, destination, cfg_seek: dict) -> list[
             "off_corridor_km": round(detour_km, 2),
         })
 
-    targets.sort(key=lambda t: (-t["fun_index"], -t["length_m"]))
+    for target in targets:
+        target["value"] = target_value(target, cfg_seek)
+    targets.sort(key=lambda t: -t["value"])
     return _dedupe_nearby(targets, cfg_seek["max_targets"])
+
+
+def target_value(target: dict, cfg_seek: dict) -> float:
+    """How much a road is worth detouring for.
+
+    Ranking on fun alone let a short gem far off the corridor beat a long
+    great road sitting right on it, which is how seek ended up offering a
+    +35 min detour for 902 m of road.
+    """
+    length = min(target["length_m"], cfg_seek["length_cap_m"])
+    off_penalty = 1.0 + target["off_corridor_km"] / cfg_seek["corridor_half_km"]
+    return target["fun_index"] * length / off_penalty
+
+
+def earned_detour_s(target: dict, cfg_seek: dict) -> float:
+    """Extra seconds this road justifies — long and great earns more.
+
+    Separate from the hard `max_time_multiplier` ceiling: that stops absurd
+    routes, this asks whether the trade is one a driver actually wants.
+    """
+    km = target["length_m"] / 1000.0
+    return cfg_seek["detour_minutes_per_km"] * km * target["fun_index"] * 60.0
 
 
 def _dedupe_nearby(targets: list[dict], limit: int, min_gap_km: float = 1.0) -> list[dict]:

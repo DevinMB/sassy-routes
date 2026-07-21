@@ -119,9 +119,10 @@ def test_peak_seeking_adds_a_candidate_through_a_standout_road():
     mock_couch(SEGMENT_ROWS)
     respx.post(f"{COUCH}/segments/_design/seek/_view/by_cell").mock(
         return_value=httpx.Response(200, json={"rows": [{
+            # long and good enough to earn the fixture's 5 min detour
             "value": {
-                "fun": 0.57, "mid": [42.30, -83.40],
-                "name": "Hall Street SW", "length_m": 261.0,
+                "fun": 0.80, "mid": [42.30, -83.40], "highway": "tertiary",
+                "name": "Hall Street SW", "length_m": 1800.0,
             }
         }]})
     )
@@ -131,11 +132,39 @@ def test_peak_seeking_adds_a_candidate_through_a_standout_road():
     sought = [c for c in resp.json()["candidates"] if c["sought"]]
     assert len(sought) == 1
     assert sought[0]["sought"]["name"] == "Hall Street SW"
-    assert sought[0]["sought"]["fun_index"] == 0.57
+    assert sought[0]["sought"]["fun_index"] == 0.80
     # the seek request must actually pin the via-point
     body = json.loads(post_route.calls[-1].request.content)
     assert len(body["points"]) == 3
     assert body["points"][1] == [-83.40, 42.30]
+
+
+@respx.mock
+def test_seek_declines_a_detour_the_road_does_not_earn():
+    # A short road can't justify a long detour beyond what the fun route
+    # already costs — the extra 10 min here buys 261 m, which earns ~1.8 min.
+    slow_seek = gh_path(30000, 1_500_000, COORDS_FUN, [[0, 2, 222]])
+    respx.get(f"{GH}/route").mock(return_value=httpx.Response(200, json=FASTEST))
+    respx.post(f"{GH}/route").mock(
+        side_effect=[
+            httpx.Response(200, json=FUN_ROUTE),  # λ=0.3 → kept, 900s baseline
+            httpx.Response(200, json=FUN_ROUTE),  # λ=0.6 → deduped
+            httpx.Response(200, json=FUN_ROUTE),  # λ=0.9 → deduped
+            httpx.Response(200, json=slow_seek),  # seek attempt: +10 min
+        ]
+    )
+    mock_couch(SEGMENT_ROWS)
+    respx.post(f"{COUCH}/segments/_design/seek/_view/by_cell").mock(
+        return_value=httpx.Response(200, json={"rows": [{
+            "value": {
+                "fun": 0.57, "mid": [42.30, -83.40], "highway": "tertiary",
+                "name": "Brief Curve", "length_m": 261.0,
+            }
+        }]})
+    )
+    resp = client.post("/api/route", json={"origin": ANN_ARBOR, "destination": DETROIT})
+    assert resp.status_code == 200
+    assert all(c["sought"] is None for c in resp.json()["candidates"])
 
 
 @respx.mock

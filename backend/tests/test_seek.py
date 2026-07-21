@@ -1,5 +1,7 @@
+import pytest
+
 from app.schemas import LatLng
-from app.seek import corridor_cells, rank_targets
+from app.seek import corridor_cells, earned_detour_s, rank_targets, target_value
 
 CFG = {
     "cell_size_deg": 0.02,
@@ -7,6 +9,9 @@ CFG = {
     "min_length_m": 150,
     "max_targets": 3,
     "exclude_highways": ["residential", "living_street", "service"],
+    "length_cap_m": 3000,
+    "corridor_half_km": 3.0,
+    "detour_minutes_per_km": 12,
 }
 
 # Grand Rapids → south, roughly the reported Hall St corridor.
@@ -43,6 +48,43 @@ def test_best_road_ranks_first():
     targets = rank_targets(rows, ORIGIN, DEST, CFG)
     assert targets[0]["name"] == "Great Curve"
     assert targets[0]["fun_index"] == 0.72
+
+
+def test_a_long_road_on_the_way_beats_a_short_gem_far_off_it():
+    # exactly the failure that made seek offer +35 min for 902 m of road
+    rows = [
+        row(0.95, 42.905, -85.716, "Short Gem", length_m=260.0),
+        row(0.88, 42.83, -85.762, "Long Good Road", length_m=1800.0),
+    ]
+    names = [t["name"] for t in rank_targets(rows, ORIGIN, DEST, CFG)]
+    assert names[0] == "Long Good Road"
+
+
+def test_length_stops_multiplying_past_the_cap():
+    near = {"fun_index": 0.8, "length_m": 3000.0, "off_corridor_km": 0.0}
+    huge = {"fun_index": 0.8, "length_m": 30000.0, "off_corridor_km": 0.0}
+    assert target_value(huge, CFG) == target_value(near, CFG)
+
+
+def test_value_halves_at_the_corridor_half_distance():
+    on_line = {"fun_index": 0.9, "length_m": 800.0, "off_corridor_km": 0.0}
+    off_line = {"fun_index": 0.9, "length_m": 800.0, "off_corridor_km": CFG["corridor_half_km"]}
+    assert target_value(off_line, CFG) == pytest.approx(target_value(on_line, CFG) / 2)
+
+
+def test_a_detour_must_be_earned_by_the_road():
+    # 902 m at 0.93 fun buys ~10 min, nowhere near the +35 min that prompted this
+    target = {"fun_index": 0.93, "length_m": 902.0, "off_corridor_km": 2.4}
+    earned = earned_detour_s(target, CFG)
+    assert earned == pytest.approx(12 * 0.902 * 0.93 * 60, rel=1e-6)
+    assert earned < 35 * 60
+    assert earned > 8 * 60
+
+
+def test_a_longer_better_road_earns_a_longer_detour():
+    short = {"fun_index": 0.9, "length_m": 400.0, "off_corridor_km": 0.0}
+    long = {"fun_index": 0.9, "length_m": 2000.0, "off_corridor_km": 0.0}
+    assert earned_detour_s(long, CFG) > earned_detour_s(short, CFG)
 
 
 def test_roads_far_off_the_corridor_are_dropped():

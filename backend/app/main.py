@@ -22,12 +22,15 @@ from .schemas import (
     SoughtRoad,
 )
 from .scoring import custom_model_for, fingerprint, scoring
-from .seek import corridor_cells, rank_targets
+from .seek import corridor_cells, earned_detour_s, rank_targets
 from .verify import HandoffVerifier
 from .waypoints import compress
 
-# bump when the cached response schema changes (cache docs embed it)
-CACHE_SCHEMA = "s4"
+# Bump whenever cached responses could change: schema edits AND behaviour
+# changes in code. The fingerprint below covers scoring.yaml, so config is
+# handled automatically — this constant is what covers *code*. Forgetting it
+# serves stale routes that silently ignore the fix you just deployed.
+CACHE_SCHEMA = "s5"
 
 setup_logging(settings.log_level)
 
@@ -205,10 +208,21 @@ def _seek_candidate(
     if not targets:
         return None
 
-    budget_s = fastest["time_s"] * scfg["max_time_multiplier"]
+    ceiling_s = fastest["time_s"] * scfg["max_time_multiplier"]
     # strongest dial available — if we're detouring on purpose, commit to it
     model = custom_model_for(max(cfg["routing"]["candidate_lambdas"]), cfg)
 
+    # Charge the road only for the detour IT causes. The seek route uses the
+    # strongest fun model, which already wanders well off the fastest line, so
+    # measuring against `fastest` billed every road for the dial's cost too
+    # (measured: 23 min "detour" for a road 0.9 km off the corridor, of which
+    # 21.4 min was the fun route's own wandering).
+    baseline_s = max((k["time_s"] for k in kept if k["fun_dial"] > 0), default=fastest["time_s"])
+
+    # Route through every shortlisted target and keep the best, rather than
+    # taking the first that merely fits: the cheapest-to-reach road is often
+    # not the one worth going for, and vice versa.
+    best: dict | None = None
     for target in targets:
         via = LatLng(lat=target["lat"], lng=target["lng"])
         try:
@@ -216,20 +230,31 @@ def _seek_candidate(
         except GraphHopperError as exc:
             events.emit("seek_failed", {"detail": exc.detail, "road": target["name"]})
             continue
-        if route["time_s"] > budget_s:
+        extra_s = route["time_s"] - baseline_s
+        if route["time_s"] > ceiling_s or extra_s > earned_detour_s(target, scfg):
+            events.emit("seek_rejected", {
+                "road": target["name"],
+                "extra_s": round(extra_s),
+                "earned_s": round(earned_detour_s(target, scfg)),
+            })
             continue
         if _is_duplicate(route, kept, cfg["routing"]["dedupe"]):
             continue  # already covered — try the next-best road, don't give up
-        return {
-            "fun_dial": 1.0,
-            **route,
-            "sought": SoughtRoad(
-                name=target["name"],
-                fun_index=target["fun_index"],
-                length_m=target["length_m"],
-            ),
-        }
-    return None
+        if best is None or target["value"] > best["target"]["value"]:
+            best = {"route": route, "target": target}
+
+    if best is None:
+        return None
+    target = best["target"]
+    return {
+        "fun_dial": 1.0,
+        **best["route"],
+        "sought": SoughtRoad(
+            name=target["name"],
+            fun_index=target["fun_index"],
+            length_m=target["length_m"],
+        ),
+    }
 
 
 def _is_duplicate(cand: dict, kept: list[dict], tol: dict) -> bool:

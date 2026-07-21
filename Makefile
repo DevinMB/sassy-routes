@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose
 
-.PHONY: help init seed up tunnel beta promote down restart logs ps test clean-graph
+.PHONY: help init seed up tunnel beta promote retune down restart logs ps test clean-graph
 
 help: ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -54,6 +54,9 @@ test: ## run backend tests (uses uv if available, else python venv)
 		.venv/bin/pip install -q -r requirements.txt -r requirements-dev.txt; \
 	fi && \
 	.venv/bin/python -m pytest -q
+
+retune: ## apply scoring.yaml edits, doing only the work they need (FORCE=1 for all of it)
+	@./infra/retune.sh
 
 pipeline: ## score all segments into CouchDB + fun CSV (full rebuild, ~5-10 min)
 	$(COMPOSE) run --build --rm pipeline
