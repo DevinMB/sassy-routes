@@ -16,6 +16,13 @@
 		reverse_proxy backend:8000
 	}
 
+	# staging UI. handle_path strips the prefix, so the beta container serves
+	# its assets from root while the browser requests them under /beta/.
+	redir /beta /beta/
+	handle_path /beta/* {
+		reverse_proxy frontend-beta:80
+	}
+
 	handle {
 		reverse_proxy frontend:80
 	}

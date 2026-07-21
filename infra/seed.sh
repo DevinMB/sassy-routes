@@ -9,7 +9,7 @@ EXTRACT_URL="${EXTRACT_URL:-https://download.geofabrik.de/north-america/us/michi
 PBF="data/osm/$(basename "$EXTRACT_URL")"
 
 # pre-create as the invoking user so containers (root or uid-1000) can write
-mkdir -p data/osm data/graph-cache data/couchdb data/srtm data/elevation
+mkdir -p data/osm data/graph-cache data/graph-staging data/couchdb data/srtm data/elevation data/scores
 
 if [ -f "$PBF" ]; then
     echo "extract already present: $PBF (delete it and re-run to refresh)"

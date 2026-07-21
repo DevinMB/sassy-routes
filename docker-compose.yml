@@ -20,6 +20,16 @@ services:
     build: ./frontend
     restart: unless-stopped
 
+  # Staging UI at /beta — same source tree, same API. Rebuild it alone with
+  # `make beta` to try design changes against real routes; production keeps
+  # serving the last image built by `make up` until you promote.
+  frontend-beta:
+    build:
+      context: ./frontend
+      args:
+        VITE_BASE: /beta/
+    restart: unless-stopped
+
   backend:
     build: ./backend
     restart: unless-stopped
@@ -84,22 +94,53 @@ services:
       - ./scoring.yaml:/srv/scoring.yaml:ro
       - ./data/osm:/data/osm:ro
       - ./data/srtm:/data/srtm
+      - ./data/scores:/data/scores
     depends_on:
       - couchdb
 
-  # --- Cloudflare tunnel (enable when ready to expose a hosted URL) ---
-  # 1. Create a tunnel in Cloudflare Zero Trust → Networks → Tunnels.
-  # 2. Set the public hostname's service to http://caddy:80.
-  # 3. Put TUNNEL_TOKEN in .env and uncomment:
+  # One-shot graph import with the apex_fun encoded value baked in from the
+  # pipeline's CSV (the stock graphhopper image can LOAD such a graph but not
+  # build one). Run via `make import-graph` after `make pipeline`.
   #
-  # cloudflared:
-  #   image: cloudflare/cloudflared:latest
-  #   restart: unless-stopped
-  #   command: tunnel --no-autoupdate run
-  #   environment:
-  #     TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env}
-  #   depends_on:
-  #     - caddy
+  # It builds into ./data/graph-staging, mounted here at the container path the
+  # config expects — so the LIVE graph keeps serving traffic for the whole
+  # ~10 min import and `make import-graph` swaps it in at the end. A failed
+  # import therefore never touches the running graph.
+  gh-import:
+    build: ./infra/gh-import
+    profiles: ["import"]
+    environment:
+      JAVA_OPTS: "-Xmx${GH_JAVA_XMX:-3g} -Xms1g"
+    command: ["/gh-config/config.yml", "/data/scores/apex-fun.csv"]
+    volumes:
+      - ./infra/graphhopper/config.yml:/gh-config/config.yml:ro
+      - ./data/osm:/data/osm:ro
+      - ./data/graph-staging:/data/graph-cache
+      - ./data/elevation:/data/elevation-cache
+      - ./data/scores:/data/scores:ro
+
+  # Cloudflare tunnel — exposes the stack at https://sassyroutes.devinbutts.net.
+  # Opt-in via the "tunnel" profile so it never runs during local dev:
+  #   make tunnel                     (starts the whole stack incl. the tunnel)
+  # or set COMPOSE_PROFILES=tunnel in .env to include it in a plain `make up`.
+  #
+  # One-time Cloudflare setup (Zero Trust → Networks → Tunnels):
+  #   1. Create a tunnel; copy its token into TUNNEL_TOKEN in .env.
+  #   2. Add a Public Hostname: sassyroutes.devinbutts.net → service
+  #      http://caddy:80 (HTTP, not HTTPS — Cloudflare terminates TLS and the
+  #      tunnel reaches Caddy over the internal docker network).
+  cloudflared:
+    image: cloudflare/cloudflared:2024.12.2
+    restart: unless-stopped
+    profiles: ["tunnel"]
+    command: tunnel --no-autoupdate run
+    # Not required with `:?` here: compose evaluates interpolation for ALL
+    # services even when this one is excluded by profile, which would break a
+    # plain `make up`. `make tunnel` guards the token instead.
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - caddy
 
   # Kafka is deferred to Phase 3 (offline pipeline + apex.events analytics).
   # Guardrail: it must never sit in the user-facing routing path.

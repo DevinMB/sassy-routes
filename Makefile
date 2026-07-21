@@ -1,6 +1,6 @@
 COMPOSE ?= docker compose
 
-.PHONY: help init seed up down restart logs ps test clean-graph
+.PHONY: help init seed up tunnel beta promote down restart logs ps test clean-graph
 
 help: ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -14,8 +14,24 @@ init: ## create .env from template if missing (random couchdb password)
 seed: init ## download the Michigan OSM extract (idempotent, resumable)
 	./infra/seed.sh
 
-up: ## build and start the whole stack
+up: ## build and start the whole stack (local; no tunnel)
 	$(COMPOSE) up -d --build
+
+tunnel: ## build and start the whole stack incl. the Cloudflare tunnel
+	@token=$$(grep -E '^TUNNEL_TOKEN=.+' .env | cut -d= -f2-); \
+	if [ -z "$$token" ]; then \
+		echo "TUNNEL_TOKEN is empty in .env — paste the Cloudflare tunnel token first."; exit 1; \
+	fi
+	COMPOSE_PROFILES=tunnel $(COMPOSE) up -d --build
+
+beta: ## rebuild just the staging UI at /beta (production untouched)
+	$(COMPOSE) up -d --build frontend-beta
+
+reload-proxy: ## apply Caddyfile edits (it's bind-mounted, so compose won't notice)
+	$(COMPOSE) restart caddy
+
+promote: ## ship what's on /beta to the production UI
+	$(COMPOSE) up -d --build frontend
 
 down: ## stop the stack
 	$(COMPOSE) down
@@ -39,8 +55,19 @@ test: ## run backend tests (uses uv if available, else python venv)
 	fi && \
 	.venv/bin/python -m pytest -q
 
-pipeline: ## score all segments into CouchDB (full rebuild, ~10-30 min)
+pipeline: ## score all segments into CouchDB + fun CSV (full rebuild, ~5-10 min)
 	$(COMPOSE) run --build --rm pipeline
+
+import-graph: ## rebuild the routing graph with fun scores baked in (site stays up; ~1 min swap at the end)
+	@echo "building into data/graph-staging — the live graph keeps serving..."
+	docker run --rm -v $(PWD)/data:/data alpine rm -rf /data/graph-staging
+	$(COMPOSE) run --build --rm gh-import
+	@echo "graph built; swapping in (this is the only downtime)"
+	$(COMPOSE) stop graphhopper
+	docker run --rm -v $(PWD)/data:/data alpine \
+		sh -c 'rm -rf /data/graph-cache && mv /data/graph-staging /data/graph-cache'
+	$(COMPOSE) start graphhopper
+	@echo "done — graphhopper is reloading the new graph"
 
 clean-graph: ## delete the graphhopper graph cache (forces reimport on next up)
 	$(COMPOSE) stop graphhopper
