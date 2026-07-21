@@ -51,12 +51,16 @@ def rank_targets(rows: list[dict], origin, destination, cfg_seek: dict) -> list[
     """
     buffer_km = cfg_seek["corridor_buffer_km"]
     min_length_m = cfg_seek["min_length_m"]
+    excluded = set(cfg_seek.get("exclude_highways") or ())
 
     targets = []
     for row in rows:
         value = row.get("value") or {}
         mid = value.get("mid")
         if not mid or value.get("length_m", 0) < min_length_m:
+            continue
+        # not a road you detour *to*, whatever its geometry says
+        if (value.get("highway") or "").removesuffix("_link") in excluded:
             continue
         detour_km = _distance_to_segment_km(mid[0], mid[1], origin, destination)
         if detour_km > buffer_km:

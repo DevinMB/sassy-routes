@@ -6,6 +6,7 @@ CFG = {
     "corridor_buffer_km": 6,
     "min_length_m": 150,
     "max_targets": 3,
+    "exclude_highways": ["residential", "living_street", "service"],
 }
 
 # Grand Rapids → south, roughly the reported Hall St corridor.
@@ -13,8 +14,16 @@ ORIGIN = LatLng(lat=43.0097, lng=-85.6590)
 DEST = LatLng(lat=42.5430, lng=-85.8472)
 
 
-def row(fun, lat, lng, name, length_m=300.0):
-    return {"value": {"fun": fun, "mid": [lat, lng], "name": name, "length_m": length_m}}
+def row(fun, lat, lng, name, length_m=300.0, highway="tertiary"):
+    return {
+        "value": {
+            "fun": fun,
+            "mid": [lat, lng],
+            "name": name,
+            "length_m": length_m,
+            "highway": highway,
+        }
+    }
 
 
 def test_corridor_cells_cover_both_endpoints():
@@ -40,6 +49,26 @@ def test_roads_far_off_the_corridor_are_dropped():
     # ~100 km east of the corridor
     rows = [row(0.9, 42.80, -84.40, "Far Away Rd")]
     assert rank_targets(rows, ORIGIN, DEST, CFG) == []
+
+
+def test_subdivision_streets_are_never_sought():
+    # Regal Drive, measured: curvature and elevation both maxed, no gate fires,
+    # scores 0.938 — geometry alone can't tell it's someone's neighbourhood.
+    # Seeking means detouring *to* a road, which this never warrants.
+    rows = [
+        row(0.94, 42.90, -85.72, "Regal Drive", length_m=478.0, highway="residential"),
+        row(0.61, 42.88, -85.73, "Real Road", highway="tertiary"),
+    ]
+    targets = rank_targets(rows, ORIGIN, DEST, CFG)
+    assert [t["name"] for t in targets] == ["Real Road"]
+
+
+def test_excluding_seek_targets_does_not_touch_their_score():
+    # they stay routable and scored — only the "go out of your way" list is
+    # filtered, so a curvy residential street on your way is still preferred
+    rows = [row(0.94, 42.90, -85.72, "Regal Drive", length_m=478.0, highway="residential")]
+    assert rank_targets(rows, ORIGIN, DEST, CFG) == []
+    assert rows[0]["value"]["fun"] == 0.94
 
 
 def test_slivers_are_dropped():

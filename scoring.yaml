@@ -181,6 +181,15 @@ seek:
   # Only segments at or above this score are indexed as seek targets — keeps
   # the CouchDB view small and the search fast.
   min_fun_index: 0.40
+  # Seeking means "go out of your way to drive this road", and a subdivision
+  # street is never that however good its geometry — it's 25 mph past people's
+  # front yards. Measured case: Regal Drive scores 0.938 with curvature AND
+  # elevation both maxed and no gate firing (few driveways, sweeping bends
+  # rather than tight ones), so nothing in the geometry criteria can catch it.
+  # These roads stay fully scored and routable — a curvy residential street
+  # that's genuinely on your way is still preferred — they just aren't hunted
+  # as destinations.
+  exclude_highways: [residential, living_street, service]
   # Grid cell for the coordinate index, degrees (~2.2 km at Michigan latitudes).
   cell_size_deg: 0.02
   # How far off the straight origin→destination line to look, km.
