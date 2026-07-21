@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     # scoring.yaml location (mounted read-only in the container).
     scoring_path: str = "/srv/scoring.yaml"
 
+    # Verified Google Maps handoff (CLAUDE-ref §5) — OFF by default: costs
+    # money and needs a Directions API key. Opt-in only.
+    handoff_verify: bool = False
+    google_api_key: str | None = None
+
     log_level: str = "INFO"
 
     @property

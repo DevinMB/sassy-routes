@@ -16,8 +16,13 @@ class CouchClient:
         self._client = httpx.Client(base_url=url, timeout=timeout_s) if url else None
         self._cache_db_ready = False
 
-    def segment_fun(self, way_ids: list[int]) -> dict[int, float] | None:
-        """way_id → fun_index. None = CouchDB unavailable (≠ empty result)."""
+    def segment_docs(self, way_ids: list[int]) -> dict[int, dict] | None:
+        """way_id → scored segment doc (fun_index, components, gates).
+
+        None = CouchDB unavailable (≠ empty result). Callers get the whole doc
+        so the API can explain *why* a route scored what it did, not just the
+        final number — same query cost, we were already fetching full docs.
+        """
         if self._client is None or not way_ids:
             return None if self._client is None else {}
         try:
@@ -27,15 +32,35 @@ class CouchClient:
                 json={"keys": [f"way:{wid}" for wid in way_ids]},
             )
             resp.raise_for_status()
-            out: dict[int, float] = {}
+            out: dict[int, dict] = {}
             for row in resp.json().get("rows", []):
                 doc = row.get("doc")
                 if doc and "fun_index" in doc:
-                    out[int(row["key"].removeprefix("way:"))] = doc["fun_index"]
+                    out[int(row["key"].removeprefix("way:"))] = doc
             return out
         except Exception as exc:  # noqa: BLE001
             logger.warning("segment lookup failed (degrading, fun_index=null): %s", exc)
             return None
+
+    def seek_rows(self, cells: list[list[int]]) -> list[dict]:
+        """High-fun segments in the given grid cells (seek/by_cell view).
+
+        Best-effort like everything else here: on failure we return nothing and
+        the caller simply skips peak-seeking.
+        """
+        if self._client is None or not cells:
+            return []
+        try:
+            resp = self._client.post(
+                "/segments/_design/seek/_view/by_cell", json={"keys": cells}
+            )
+            if resp.status_code != 200:
+                logger.warning("seek view unavailable (%s) — skipping", resp.status_code)
+                return []
+            return resp.json().get("rows", [])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("seek lookup failed (skipping): %s", exc)
+            return []
 
     def cache_get(self, key: str) -> dict | None:
         if self._client is None:

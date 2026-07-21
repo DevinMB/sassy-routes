@@ -42,12 +42,28 @@ class GraphHopperClient:
             raise GraphHopperError(502, "routing engine is unreachable")
         return self._parse(resp)
 
-    def custom_route(self, origin: LatLng, destination: LatLng, custom_model: dict) -> dict:
-        """Flexible (LM) route with a per-request custom model — the fun dial."""
+    def custom_route(
+        self,
+        origin: LatLng,
+        destination: LatLng,
+        custom_model: dict,
+        via: LatLng | None = None,
+    ) -> dict:
+        """Flexible (LM) route with a per-request custom model — the fun dial.
+
+        `via` forces the route through a point (peak-seeking): GraphHopper
+        treats intermediate points as hard constraints.
+        """
+        points = [[origin.lng, origin.lat]]
+        if via is not None:
+            points.append([via.lng, via.lat])
+        points.append([destination.lng, destination.lat])
         body = {
-            "points": [[origin.lng, origin.lat], [destination.lng, destination.lat]],
+            "points": points,
             "profile": "car",
             "ch.disable": True,
+            # a via-point shouldn't force a U-turn if the road runs the other way
+            "pass_through": True,
             "points_encoded": False,
             "instructions": False,
             "details": ["osm_way_id"],

@@ -1,17 +1,33 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .couch import CouchClient
+from .deeplink import maps_deep_link
 from .events import LogEventEmitter
-from .funindex import route_fun_index
+from .funindex import summarize_route
 from .geo import haversine_km
 from .geocoder import GeocoderError, PhotonClient
 from .graphhopper import GraphHopperClient, GraphHopperError
 from .logging_setup import setup_logging
 from .middleware import entitlement_middleware
-from .schemas import GeocodeResponse, LatLng, RouteCandidate, RouteRequest, RouteResponse
-from .scoring import custom_model_for, scoring
+from .schemas import (
+    ClientEvent,
+    GeocodeResponse,
+    Handoff,
+    LatLng,
+    RouteCandidate,
+    RouteRequest,
+    RouteResponse,
+    SoughtRoad,
+)
+from .scoring import custom_model_for, fingerprint, scoring
+from .seek import corridor_cells, rank_targets
+from .verify import HandoffVerifier
+from .waypoints import compress
+
+# bump when the cached response schema changes (cache docs embed it)
+CACHE_SCHEMA = "s4"
 
 setup_logging(settings.log_level)
 
@@ -34,6 +50,11 @@ geocoder = PhotonClient(
 )
 couch = CouchClient(settings.couchdb_url, settings.couchdb_timeout_s)
 events = LogEventEmitter()
+verifier = (
+    HandoffVerifier(settings.google_api_key)
+    if settings.handoff_verify and settings.google_api_key
+    else None
+)
 
 
 @app.get("/api/health")
@@ -94,26 +115,121 @@ def route(req: RouteRequest) -> RouteResponse:
             continue
         kept.append({"fun_dial": lam, **cand})
 
+    # Peak-seeking: a length-weighted average structurally ignores a brilliant
+    # short road, so look for one near the corridor and route through it.
+    seek_target = _seek_candidate(req, cfg, fastest, kept)
+    if seek_target is not None:
+        kept.append(seek_target)
+
     way_ids = sorted({w for c in kept for _, _, w in c["way_intervals"] if w is not None})
-    segment_fun = couch.segment_fun(way_ids)
+    segment_docs = couch.segment_docs(way_ids)
     default_fun = cfg["runtime"]["default_fun_index"]
 
-    candidates = [
-        RouteCandidate(
-            fun_dial=c["fun_dial"],
-            distance_m=c["distance_m"],
-            time_s=c["time_s"],
-            dtime_s=round(c["time_s"] - fastest["time_s"], 1),
-            fun_index=route_fun_index(c["coordinates"], c["way_intervals"], segment_fun, default_fun),
-            coordinates=c["coordinates"],
+    candidates = []
+    for c in kept:
+        fun_index, why = summarize_route(
+            c["coordinates"], c["way_intervals"], segment_docs, default_fun
         )
-        for c in kept
-    ]
+        candidates.append(
+            RouteCandidate(
+                fun_dial=c["fun_dial"],
+                distance_m=c["distance_m"],
+                time_s=c["time_s"],
+                dtime_s=round(c["time_s"] - fastest["time_s"], 1),
+                fun_index=fun_index,
+                coordinates=c["coordinates"],
+                handoff=_handoff(c["coordinates"], cfg, c["fun_dial"]),
+                why=why,
+                sought=c.get("sought"),
+            )
+        )
     resp = RouteResponse(candidates=candidates)
 
     couch.cache_put(key, resp.model_dump(), cfg["cache"]["route_ttl_seconds"])
     _emit(req, [c.model_dump(exclude={"coordinates"}) for c in candidates], cached=False)
     return resp
+
+
+@app.post("/api/events", status_code=204)
+def client_event(ev: ClientEvent) -> Response:
+    """Frontend analytics (e.g. "open in Maps" clicks) — the §6 metering seam."""
+    events.emit(ev.type, ev.model_dump(exclude={"type"}))
+    return Response(status_code=204)
+
+
+def _handoff(coordinates: list, cfg: dict, fun_dial: float) -> Handoff:
+    hcfg = cfg["handoff"]
+    if fun_dial == 0:
+        # The fastest route needs no pinning: Google optimizes the same
+        # objective (and adds live traffic). Origin → destination, no waypoints.
+        return Handoff(
+            maps_url=maps_deep_link(coordinates, []),
+            waypoints_used=0,
+            worst_gap_excess_m=0.0,
+            pinned=True,
+        )
+    wp_idxs, gap_excess, pinned = compress(
+        coordinates, hcfg["max_waypoints"], hcfg["max_gap_excess_m"]
+    )
+    verified = False
+    if verifier is not None:
+        wp_idxs, verified = verifier.verify(
+            coordinates,
+            wp_idxs,
+            hcfg["max_waypoints"],
+            hcfg["verify_max_deviation_m"],
+            hcfg["verify_max_attempts"],
+        )
+    return Handoff(
+        maps_url=maps_deep_link(coordinates, wp_idxs),
+        waypoints_used=len(wp_idxs),
+        worst_gap_excess_m=gap_excess,
+        pinned=pinned,
+        verified=verified,
+    )
+
+
+def _seek_candidate(
+    req: RouteRequest, cfg: dict, fastest: dict, kept: list[dict]
+) -> dict | None:
+    """Route through the best standout road near the corridor, if one fits.
+
+    Best-effort: any failure (no view, no target, over budget) simply means no
+    seek candidate — the normal candidates are unaffected.
+    """
+    scfg = cfg["seek"]
+    cells = corridor_cells(
+        req.origin, req.destination, scfg["cell_size_deg"], scfg["corridor_buffer_km"]
+    )
+    targets = rank_targets(couch.seek_rows(cells), req.origin, req.destination, scfg)
+    if not targets:
+        return None
+
+    budget_s = fastest["time_s"] * scfg["max_time_multiplier"]
+    # strongest dial available — if we're detouring on purpose, commit to it
+    model = custom_model_for(max(cfg["routing"]["candidate_lambdas"]), cfg)
+
+    for target in targets:
+        via = LatLng(lat=target["lat"], lng=target["lng"])
+        try:
+            route = gh.custom_route(req.origin, req.destination, model, via=via)
+        except GraphHopperError as exc:
+            events.emit("seek_failed", {"detail": exc.detail, "road": target["name"]})
+            continue
+        if route["time_s"] > budget_s:
+            continue
+        if _is_duplicate(route, kept, cfg["routing"]["dedupe"]):
+            continue  # already covered — try the next-best road, don't give up
+        return {
+            "fun_dial": 1.0,
+            **route,
+            "sought": SoughtRoad(
+                name=target["name"],
+                fun_index=target["fun_index"],
+                length_m=target["length_m"],
+            ),
+        }
+    return None
 
 
 def _is_duplicate(cand: dict, kept: list[dict], tol: dict) -> bool:
@@ -128,7 +244,7 @@ def _cache_key(origin: LatLng, destination: LatLng, cfg: dict) -> str:
     cell = cfg["cache"]["cell_size_deg"]
     q = lambda v: round(v / cell)  # noqa: E731
     return (
-        f"v{cfg['version']}-{q(origin.lat)}_{q(origin.lng)}-"
+        f"{CACHE_SCHEMA}-{fingerprint()}-{q(origin.lat)}_{q(origin.lng)}-"
         f"{q(destination.lat)}_{q(destination.lng)}"
     )
 

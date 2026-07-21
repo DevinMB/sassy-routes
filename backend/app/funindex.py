@@ -1,32 +1,70 @@
-"""Length-weighted route fun index from per-segment CouchDB scores."""
+"""Length-weighted route fun index, plus the per-criterion breakdown behind it.
+
+The breakdown surfaces the same five criteria the offline scorer uses
+(scoring.yaml): the three blended components — curvature, elevation,
+road_class — and the two multiplicative gates — surface, safety. Showing them
+is what makes the fun number auditable instead of magic.
+"""
 from .geo import haversine_km
 
+COMPONENTS = ("curvature", "elevation", "road_class")
+GATES = ("surface", "safety")
 
-def route_fun_index(
+
+def summarize_route(
     coordinates: list,
     way_intervals: list,
-    segment_fun: dict[int, float] | None,
+    segment_docs: dict[int, dict] | None,
     default_fun: float,
-) -> float | None:
-    """Weight each way interval's fun_index by its polyline length.
+) -> tuple[float | None, dict | None]:
+    """Returns (fun_index, why).
 
-    segment_fun None ⇒ CouchDB unavailable ⇒ report null rather than a made-up
-    number. Ways missing from the db (unscored) fall back to default_fun.
+    segment_docs None ⇒ CouchDB unavailable ⇒ both None rather than a
+    made-up number. Ways missing from the db (unscored) count toward the fun
+    index at default_fun but are excluded from the breakdown, so unscored
+    stretches dilute neither direction.
     """
-    if segment_fun is None or not way_intervals or len(coordinates) < 2:
-        return None
-    weighted = 0.0
-    total = 0.0
+    if segment_docs is None or not way_intervals or len(coordinates) < 2:
+        return None, None
+
+    # Aggregate length per way first — GraphHopper can emit the same way over
+    # several intervals, and we want each way counted once by total length.
+    lengths: dict[int | None, float] = {}
     for from_idx, to_idx, way_id in way_intervals:
-        length = _interval_km(coordinates, from_idx, to_idx)
-        if length <= 0:
+        km = _interval_km(coordinates, from_idx, to_idx)
+        if km > 0:
+            lengths[way_id] = lengths.get(way_id, 0.0) + km
+
+    total_km = sum(lengths.values())
+    if total_km <= 0:
+        return None, None
+
+    weighted_fun = 0.0
+    scored_km = 0.0
+    sums = {key: 0.0 for key in (*COMPONENTS, *GATES)}
+
+    for way_id, km in lengths.items():
+        doc = segment_docs.get(way_id) if way_id is not None else None
+        if doc is None:
+            weighted_fun += default_fun * km
             continue
-        fun = segment_fun.get(way_id, default_fun) if way_id is not None else default_fun
-        weighted += fun * length
-        total += length
-    if total <= 0:
-        return None
-    return round(weighted / total, 3)
+        weighted_fun += doc.get("fun_index", default_fun) * km
+        scored_km += km
+        components = doc.get("components") or {}
+        gates = doc.get("gates") or {}
+        for key in COMPONENTS:
+            sums[key] += float(components.get(key, 0.0)) * km
+        for key in GATES:
+            # a missing gate means "not penalized"
+            sums[key] += float(gates.get(key, 1.0)) * km
+
+    fun_index = round(weighted_fun / total_km, 3)
+    if scored_km <= 0:
+        return fun_index, None
+    why = {key: round(value / scored_km, 3) for key, value in sums.items()}
+    # share of the route we actually have scores for — context for the rest
+    why["scored_fraction"] = round(scored_km / total_km, 3)
+    return fun_index, why
 
 
 def _interval_km(coordinates: list, from_idx: int, to_idx: int) -> float:

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import _cache_key, app
 from app.schemas import LatLng
+from app.scoring import scoring
 
 client = TestClient(app)
 GH = "http://graphhopper:8989"
@@ -30,10 +31,15 @@ def gh_path(distance, time_ms, coords, way_intervals):
 COORDS_FAST = [[-83.743, 42.281], [-83.4, 42.3], [-83.046, 42.331]]
 COORDS_FUN = [[-84.0, 42.0], [-84.0, 42.01], [-84.0, 42.02]]
 
-FASTEST = gh_path(10000, 600_000, COORDS_FAST, [[0, 2, 111]])
+FASTEST_MS = 600_000
+# Derived from the real config so tuning max_time_multiplier can't silently
+# turn the over-budget fixture into an in-budget one.
+OVER_BUDGET_MS = int(FASTEST_MS * scoring()["routing"]["max_time_multiplier"]) + 60_000
+
+FASTEST = gh_path(10000, FASTEST_MS, COORDS_FAST, [[0, 2, 111]])
 NEAR_DUPLICATE = gh_path(10050, 605_000, COORDS_FAST, [[0, 2, 111]])  # λ=0.3
 FUN_ROUTE = gh_path(12000, 900_000, COORDS_FUN, [[0, 1, 222], [1, 2, 333]])  # λ=0.6
-TOO_SLOW = gh_path(30000, 1_300_000, COORDS_FUN, [[0, 2, 222]])  # λ=0.9: > 2× fastest
+TOO_SLOW = gh_path(30000, OVER_BUDGET_MS, COORDS_FUN, [[0, 2, 222]])  # λ=0.9: over cap
 
 
 def mock_couch(segment_rows=None, cache_hit=None):
@@ -88,6 +94,69 @@ def test_route_returns_deduped_capped_candidates():
     first_model = json.loads(post_route.calls[0].request.content)["custom_model"]
     assert all(rule["multiply_by"] <= 1.0 for rule in first_model["priority"])
 
+    # every candidate carries a Maps handoff
+    for c in cands:
+        assert c["handoff"]["maps_url"].startswith("https://www.google.com/maps/dir/?api=1")
+        assert c["handoff"]["pinned"] is True
+        assert c["handoff"]["verified"] is False  # verify flag is off by default
+    # fastest hands off waypoint-free: Google optimizes the same objective
+    assert fastest["handoff"]["waypoints_used"] == 0
+    assert "waypoints" not in fastest["handoff"]["maps_url"]
+
+
+@respx.mock
+def test_peak_seeking_adds_a_candidate_through_a_standout_road():
+    respx.get(f"{GH}/route").mock(return_value=httpx.Response(200, json=FASTEST))
+    # λ candidates all duplicate the fastest; only the via-routed one differs
+    post_route = respx.post(f"{GH}/route").mock(
+        side_effect=[
+            httpx.Response(200, json=NEAR_DUPLICATE),
+            httpx.Response(200, json=NEAR_DUPLICATE),
+            httpx.Response(200, json=NEAR_DUPLICATE),
+            httpx.Response(200, json=FUN_ROUTE),  # the seek attempt
+        ]
+    )
+    mock_couch(SEGMENT_ROWS)
+    respx.post(f"{COUCH}/segments/_design/seek/_view/by_cell").mock(
+        return_value=httpx.Response(200, json={"rows": [{
+            "value": {
+                "fun": 0.57, "mid": [42.30, -83.40],
+                "name": "Hall Street SW", "length_m": 261.0,
+            }
+        }]})
+    )
+
+    resp = client.post("/api/route", json={"origin": ANN_ARBOR, "destination": DETROIT})
+    assert resp.status_code == 200
+    sought = [c for c in resp.json()["candidates"] if c["sought"]]
+    assert len(sought) == 1
+    assert sought[0]["sought"]["name"] == "Hall Street SW"
+    assert sought[0]["sought"]["fun_index"] == 0.57
+    # the seek request must actually pin the via-point
+    body = json.loads(post_route.calls[-1].request.content)
+    assert len(body["points"]) == 3
+    assert body["points"][1] == [-83.40, 42.30]
+
+
+@respx.mock
+def test_seek_view_missing_does_not_break_routing():
+    respx.get(f"{GH}/route").mock(return_value=httpx.Response(200, json=FASTEST))
+    respx.post(f"{GH}/route").mock(return_value=httpx.Response(200, json=FUN_ROUTE))
+    mock_couch(SEGMENT_ROWS)
+    respx.post(f"{COUCH}/segments/_design/seek/_view/by_cell").mock(
+        return_value=httpx.Response(404)  # view not built yet
+    )
+    resp = client.post("/api/route", json={"origin": ANN_ARBOR, "destination": DETROIT})
+    assert resp.status_code == 200
+    assert all(c["sought"] is None for c in resp.json()["candidates"])
+
+
+def test_client_event_accepted_and_unknown_rejected():
+    ok = client.post("/api/events", json={"type": "maps_opened", "fun_dial": 0.6})
+    assert ok.status_code == 204
+    bad = client.post("/api/events", json={"type": "totally_made_up"})
+    assert bad.status_code == 422
+
 
 @respx.mock
 def test_couch_down_degrades_to_null_fun_index():
@@ -107,6 +176,13 @@ def test_cache_hit_skips_graphhopper():
         "candidates": [{
             "fun_dial": 0.0, "distance_m": 1.0, "time_s": 1.0, "dtime_s": 0.0,
             "fun_index": 0.5, "coordinates": [[-83.7, 42.2], [-83.6, 42.3]],
+            "handoff": {
+                "maps_url": "https://www.google.com/maps/dir/?api=1",
+                "waypoints_used": 0, "worst_gap_excess_m": 0.0,
+                "pinned": True, "verified": False,
+            },
+            "why": None,
+            "sought": None,
         }]
     }
     mock_couch(cache_hit={"payload": payload, "expires": 9_999_999_999})
