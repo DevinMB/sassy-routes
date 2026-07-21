@@ -11,7 +11,18 @@ CFG = yaml.safe_load((Path(__file__).parents[2] / "scoring.yaml").read_text())
 
 
 def no_junctions(n):
+    """No junctions anywhere — for curvature tests, where the mask only
+    controls conflict-point discounting."""
     return np.zeros(n, dtype=bool)
+
+
+def through_road(n):
+    """Junction at each end and nowhere else: a normal road segment. This is
+    the realistic default for score_way — a way with NO junction at an endpoint
+    is a dead end, which the model deliberately rejects."""
+    mask = np.zeros(n, dtype=bool)
+    mask[0] = mask[-1] = True
+    return mask
 
 
 def straight_road(n=20, step=0.001):
@@ -42,11 +53,16 @@ def test_twisty_road_scores_high_curvature():
     assert score > 0.3
 
 
-def test_junctions_zero_out_nearby_curvature():
+def test_junctions_discount_nearby_curvature():
     lats, lngs = twisty_road()
+    mask = no_junctions(len(lats))
+    clean, _, _ = curvature_score(lats, lngs, mask, CFG)
     all_junctions = np.ones(len(lats), dtype=bool)  # driveway hell
-    score, _, _ = curvature_score(lats, lngs, all_junctions, CFG)
-    assert score == 0.0
+    discounted, _, _ = curvature_score(lats, lngs, all_junctions, CFG)
+    # every vertex sits in a conflict zone, so the whole way is discounted —
+    # heavily penalized (guardrail 4) but no longer erased outright.
+    assert discounted == pytest.approx(clean * CFG["conflict_points"]["near_junction_weight"])
+    assert 0 < discounted < clean
 
 
 def test_elevation_relief_earns_component():
@@ -74,7 +90,7 @@ def test_parse_maxspeed(raw, expected):
 
 def test_unpaved_gate_kills_fun():
     lats, lngs = twisty_road()
-    mask = no_junctions(len(lats))
+    mask = through_road(len(lats))
     paved = score_way({"highway": "tertiary", "surface": "asphalt"}, lats, lngs, mask, None, CFG)
     gravel = score_way({"highway": "tertiary", "surface": "gravel"}, lats, lngs, mask, None, CFG)
     assert paved["fun_index"] > 0.3
@@ -83,7 +99,7 @@ def test_unpaved_gate_kills_fun():
 
 def test_low_limit_tight_geometry_penalized():
     lats, lngs = twisty_road()
-    mask = no_junctions(len(lats))
+    mask = through_road(len(lats))
     open_road = score_way({"highway": "tertiary"}, lats, lngs, mask, None, CFG)
     goat_path = score_way({"highway": "tertiary", "maxspeed": "25 mph"}, lats, lngs, mask, None, CFG)
     assert goat_path["fun_index"] < open_road["fun_index"]
@@ -94,9 +110,94 @@ def test_unknown_highway_skipped():
     assert score_way({"highway": "bridleway"}, lats, lngs, no_junctions(len(lats)), None, CFG) is None
 
 
+def test_residential_open_qualifies_slow_low_density_street():
+    lats, lngs = twisty_road()
+    mask = through_road(len(lats))  # zero INTERIOR junction density
+    default_residential = score_way({"highway": "residential"}, lats, lngs, mask, None, CFG)
+    open_residential = score_way(
+        {"highway": "residential", "maxspeed": "25 mph"}, lats, lngs, mask, None, CFG
+    )
+    # no maxspeed tag also qualifies (unsigned US residential default 25 mph)
+    assert default_residential["fun_index"] == open_residential["fun_index"]
+    assert default_residential["components"]["road_class"] == CFG["road_class"]["residential_open"]
+
+
+def test_residential_stays_suppressed_above_speed_threshold():
+    lats, lngs = twisty_road()
+    mask = through_road(len(lats))
+    fast = score_way({"highway": "residential", "maxspeed": "45 mph"}, lats, lngs, mask, None, CFG)
+    assert fast["components"]["road_class"] == CFG["road_class"]["residential"]
+
+
+def test_residential_stays_suppressed_at_high_junction_density():
+    lats, lngs = twisty_road()
+    dense = np.ones(len(lats), dtype=bool)  # a junction at every vertex
+    busy = score_way({"highway": "residential", "maxspeed": "25 mph"}, lats, lngs, dense, None, CFG)
+    assert busy["components"]["road_class"] == CFG["road_class"]["residential"]
+
+
+def test_cul_de_sac_is_not_a_fun_road():
+    # A dead-end court: curvy, slow, zero interior junctions — it used to
+    # sail past every gate and rank among the best roads in the state.
+    lats, lngs = twisty_road()
+    dead_end = no_junctions(len(lats))
+    dead_end[0] = True  # joins the network at one end only
+    scored = score_way(
+        {"highway": "residential", "maxspeed": "25 mph"}, lats, lngs, dead_end, None, CFG
+    )
+    assert scored["components"]["road_class"] == CFG["road_class"]["dead_end"]
+    # must fall below the bar for being hunted as a standout road, or
+    # peak-seeking will route people into a cul-de-sac and back out again
+    assert scored["fun_index"] < CFG["seek"]["min_fun_index"]
+
+
+def test_dead_end_override_beats_the_residential_promotion():
+    lats, lngs = twisty_road()
+    promoted = score_way(
+        {"highway": "residential", "maxspeed": "25 mph"},
+        lats, lngs, through_road(len(lats)), None, CFG,
+    )
+    stub = score_way(
+        {"highway": "residential", "maxspeed": "25 mph"},
+        lats, lngs, no_junctions(len(lats)), None, CFG,
+    )
+    assert promoted["components"]["road_class"] == CFG["road_class"]["residential_open"]
+    assert stub["components"]["road_class"] == CFG["road_class"]["dead_end"]
+    assert stub["fun_index"] < promoted["fun_index"]
+
+
+def test_through_tertiary_is_unaffected_by_the_dead_end_rule():
+    lats, lngs = twisty_road()
+    scored = score_way({"highway": "tertiary"}, lats, lngs, through_road(len(lats)), None, CFG)
+    assert scored["components"]["road_class"] == CFG["road_class"]["tertiary"]
+
+
+def test_endpoint_junctions_alone_do_not_count_as_access_density():
+    # OSM splits ways AT intersections, so both endpoints are junctions by
+    # construction — that must not read as a driveway-dense road.
+    lats, lngs = twisty_road()
+    ends_only = no_junctions(len(lats))
+    ends_only[0] = ends_only[-1] = True
+    scored = score_way({"highway": "tertiary"}, lats, lngs, ends_only, None, CFG)
+    assert scored["gates"]["safety"] == 1.0
+
+
+def test_residential_open_still_subject_to_goat_path_safety_gate():
+    # Promotion to residential_open must not bypass the existing tight-curve
+    # -at-low-limit safety gate (guardrail 4) — it only affects road_class.
+    lats, lngs = twisty_road()
+    mask = through_road(len(lats))
+    open_tertiary = score_way({"highway": "tertiary"}, lats, lngs, mask, None, CFG)
+    open_residential = score_way(
+        {"highway": "residential", "maxspeed": "25 mph"}, lats, lngs, mask, None, CFG
+    )
+    assert open_residential["components"]["road_class"] == CFG["road_class"]["residential_open"]
+    assert open_residential["gates"]["safety"] < 1.0  # goat-path gate still fired
+
+
 def test_motorway_scores_below_tertiary():
     lats, lngs = twisty_road()
-    mask = no_junctions(len(lats))
+    mask = through_road(len(lats))
     tertiary = score_way({"highway": "tertiary", "surface": "asphalt"}, lats, lngs, mask, None, CFG)
     motorway = score_way({"highway": "motorway", "surface": "asphalt"}, lats, lngs, mask, None, CFG)
     assert motorway["fun_index"] < tertiary["fun_index"]

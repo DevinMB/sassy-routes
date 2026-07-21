@@ -30,8 +30,11 @@ def curvature_score(lats, lngs, junction_mask, cfg) -> tuple[float, float, float
     """Returns (score ∈ [0,1], tight_fraction, length_m).
 
     Interior vertices are binned by angular change per 100 m of local length;
-    vertices within conflict radius (along the line) of a junction contribute
-    zero (a curve at a blind driveway is a hazard, not fun).
+    vertices within conflict radius (along the line) of a junction are
+    discounted to near_junction_weight (a curve at a blind driveway is a
+    hazard, not fun). All junctions count here — including the way's endpoints,
+    which are real intersections — but the discount is partial, because OSM
+    splits ways at junctions and a hard zero erased short ways entirely.
     """
     seg = haversine_m(lats[:-1], lngs[:-1], lats[1:], lngs[1:])
     length_m = float(seg.sum())
@@ -43,8 +46,9 @@ def curvature_score(lats, lngs, junction_mask, cfg) -> tuple[float, float, float
     local_len = (seg[:-1] + seg[1:]) / 2.0
     rate = np.where(local_len > 1e-6, turn / (local_len / 100.0), 0.0)
 
-    # conflict-point zeroing: distance along the way to the nearest junction
-    radius = cfg["conflict_points"]["radius_m"]
+    # conflict-point discount: distance along the way to the nearest junction
+    conflict = cfg["conflict_points"]
+    radius = conflict["radius_m"]
     s = np.concatenate([[0.0], np.cumsum(seg)])  # position of each vertex
     junction_s = s[junction_mask]
     if len(junction_s):
@@ -53,9 +57,10 @@ def curvature_score(lats, lngs, junction_mask, cfg) -> tuple[float, float, float
         right = np.where(
             idx < len(junction_s), junction_s[np.minimum(idx, len(junction_s) - 1)] - s[1:-1], np.inf
         )
-        keep = np.minimum(left, right) > radius
+        near = np.minimum(left, right) <= radius
+        keep = np.where(near, conflict["near_junction_weight"], 1.0)
     else:
-        keep = np.ones(len(rate), dtype=bool)
+        keep = np.ones(len(rate))
 
     bins = cfg["curvature"]["bins"]
     weights = np.zeros(len(rate))
@@ -70,6 +75,9 @@ def curvature_score(lats, lngs, junction_mask, cfg) -> tuple[float, float, float
     tight_len = float(local_len[(rate > tight_threshold)].sum())
 
     score = float((weights * local_len * keep).sum() / length_m)
+    # rescale against the practical ceiling (see scoring.yaml) so a genuinely
+    # curvy road reads near 1.0 instead of ~0.4
+    score /= cfg["curvature"]["full_score_fraction"]
     return min(score, 1.0), tight_len / length_m, length_m
 
 
@@ -111,7 +119,8 @@ def score_way(tags: dict, lats, lngs, junction_mask, elevs, cfg) -> dict | None:
     """Full fun score for one way. Returns a CouchDB doc body, or None to skip."""
     highway = tags.get("highway", "")
     base_class = highway.removesuffix("_link")
-    class_score = cfg["road_class"].get(base_class)
+    rc_cfg = cfg["road_class"]
+    class_score = rc_cfg.get(base_class)
     if class_score is None:
         return None
 
@@ -120,6 +129,33 @@ def score_way(tags: dict, lats, lngs, junction_mask, elevs, cfg) -> dict | None:
         return None
     seg = haversine_m(lats[:-1], lngs[:-1], lats[1:], lngs[1:])
     elev = elevation_score(elevs, seg, cfg)
+
+    # Access density counts INTERIOR junctions only. A way's endpoints are
+    # junctions by construction (OSM splits roads at intersections), so
+    # including them roughly triples apparent density and made the safety gate
+    # fire on almost everything rather than on genuinely driveway-dense roads.
+    interior_junctions = junction_mask[1:-1]
+    junctions_per_km = float(interior_junctions.sum()) / max(length_m / 1000.0, 0.05)
+    maxspeed = parse_maxspeed_kmh(tags.get("maxspeed"))
+    if maxspeed is None and base_class in ("residential", "living_street"):
+        # Most US residential streets carry no maxspeed tag at all — it's an
+        # unsigned legal default, not "no limit". Assume it rather than
+        # letting untagged ways skip the safety gate below entirely.
+        maxspeed = rc_cfg["residential_open_max_speed_kmh"]
+
+    # Partial relax of the residential penalty: a slow, low-access-density
+    # residential way reads as an open curvy street, not a subdivision maze.
+    # The tight-curve-at-low-limit safety gate below still applies on top.
+    if base_class == "residential":
+        speed_ok = maxspeed <= rc_cfg["residential_open_max_speed_kmh"]
+        density_ok = junctions_per_km <= rc_cfg["residential_open_max_junction_density_per_km"]
+        if speed_ok and density_ok:
+            class_score = rc_cfg["residential_open"]
+
+    # Dead end: an endpoint that no other way shares. Overrides every promotion
+    # above — you cannot drive through a cul-de-sac, so it is not a fun road.
+    if not (bool(junction_mask[0]) and bool(junction_mask[-1])):
+        class_score = rc_cfg["dead_end"]
 
     blend = cfg["blend"]
     fun = blend["curvature"] * curv + blend["elevation"] * elev + blend["road_class"] * class_score
@@ -137,10 +173,8 @@ def score_way(tags: dict, lats, lngs, junction_mask, elevs, cfg) -> dict | None:
     # safety gate (guardrail 4: dangerous geometry scores DOWN)
     safety = cfg["safety"]
     safety_gate = 1.0
-    junctions_per_km = float(junction_mask.sum()) / max(length_m / 1000.0, 0.05)
     if junctions_per_km > safety["junction_density_per_km_threshold"]:
         safety_gate *= safety["dense_access_multiplier"]
-    maxspeed = parse_maxspeed_kmh(tags.get("maxspeed"))
     if (
         maxspeed is not None
         and maxspeed <= safety["low_speed_limit_kmh"]

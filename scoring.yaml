@@ -4,7 +4,9 @@
 #   - /pipeline (offline segment scoring into CouchDB)
 #   - /backend  (per-lambda GraphHopper custom models, candidate shaping)
 # Values are provisional; tune with real drives.
-version: 1
+# (version feeds route-cache keys: bump it whenever weights change so stale
+# cached candidates aren't served)
+version: 6
 
 # ---------------------------------------------------------------------------
 # Offline segment scoring (pipeline → CouchDB `segments`)
@@ -12,6 +14,14 @@ version: 1
 # ---------------------------------------------------------------------------
 
 curvature:
+  # Practical ceiling. The raw score is "what fraction of this way is
+  # sweeper-grade curvy", and almost nothing approaches 1.0 — measured
+  # statewide p90=0.40, p95=0.50, p99=0.66. Left raw, even an excellent road
+  # scored ~0.4, so the 60%-weighted curvature term was swamped by road_class
+  # (which saturates near 1.0 on any rural road): curvature was contributing
+  # just 3.8% of a real route's score while road_class contributed 76%.
+  # Treating 0.45 as "maximally curvy" makes corners actually lead the blend.
+  full_score_fraction: 0.45
   # Interior vertices are binned by angular change per 100 m of local length.
   # Each bin contributes weight × local length; score = Σ / total length.
   bins:
@@ -22,14 +32,24 @@ curvature:
     hairpin:  { max_deg_per_100m: .inf, weight: 0.4 }
 
 conflict_points:
-  # Vertices within this distance (along the way) of a junction node
-  # contribute ZERO curvature — a curve at a blind driveway/intersection is a
+  # Vertices within this distance (along the way) of a junction node have their
+  # curvature discounted — a curve at a blind driveway/intersection is a
   # hazard, not fun (roadcurvature.com insight).
   radius_m: 30
+  # Discount rather than erase. A hard zero was structurally unfair: OSM splits
+  # ways AT junctions, so both ends of every way sit in the conflict zone and
+  # short ways lost ALL their curvature (measured: 57% of routable ways scored
+  # exactly zero; at 0.25 that drops to 34%, while ways scoring ≥0.30 only rise
+  # 15.9%→18.2% — it rescues real curvy roads without inflating the rest).
+  near_junction_weight: 0.25
 
 elevation:
   # Relief (total |Δelevation| per km) earns up to 1.0 at full_score_m_per_km.
-  relief_full_score_m_per_km: 15
+  # Calibrated against measured Michigan relief (p50=13, p75=21, p90=32,
+  # p95=41 m/km): the old bar of 15 put 41.7% of ways at the ceiling, making
+  # elevation a near-constant instead of a signal. At 40 only 5.5% max out and
+  # the median road lands near 0.33, so this actually discriminates.
+  relief_full_score_m_per_km: 40
   # Sustained steep grade (> grade_pct over > length_m) caps the component.
   sustained_steep: { grade_pct: 9, length_m: 500, component_cap: 0.3 }
   # Grades are clipped to ±max_grade_pct before stats (SRTM noise guard).
@@ -43,7 +63,26 @@ road_class:
   primary: 0.45
   trunk: 0.1
   motorway: 0.0
+  # Residential streets default to heavily discouraged (driveways, stop
+  # signs, blind corners — guardrail 4). BUT a residential way that's both
+  # slow (posted/implied ≤ this limit) and low-access-density (few
+  # driveways/junctions per km, same idea as the safety gate below) reads as
+  # a genuine open curvy street rather than a subdivision maze, and is scored
+  # like a minor through-road instead. The tight-curve-at-low-limit safety
+  # gate still applies on top of this — a promoted residential way can still
+  # get penalized back down if its geometry is a goat path.
   residential: 0.05
+  residential_open: 0.75
+  # A way with an endpoint no other way touches is a dead end — a cul-de-sac,
+  # driveway or stub. You can't drive *through* it, so it is never a fun road,
+  # and this override beats every promotion above. Without it the model ranked
+  # subdivision courts as the best roads in Michigan: a dead-end bulb has zero
+  # interior junctions (so it dodged the access-density gate), qualified for
+  # residential_open, and its tight curve maxed out curvature. Measured: 8 of
+  # the top 12 "best roads" near Grand Rapids were courts and drives.
+  dead_end: 0.02
+  residential_open_max_speed_kmh: 41      # 25 mph == 40.23 km/h; give it headroom
+  residential_open_max_junction_density_per_km: 8
   living_street: 0.0
   service: 0.0
   road: 0.3
@@ -60,6 +99,10 @@ surface:
 safety:
   # Multiplicative gate — dangerous geometry must score DOWN (guardrail 4).
   # Dense access points (junctions+driveways) near curves = blind-driveway risk.
+  # Density counts INTERIOR junctions only: OSM splits ways at intersections,
+  # so every way ends at a junction by construction and counting the endpoints
+  # roughly tripled apparent density (measured median 12/km vs 3.4/km interior
+  # -only), firing this gate on 67% of ways instead of a targeted 28%.
   junction_density_per_km_threshold: 8
   dense_access_multiplier: 0.5
   # Tight/hairpin-heavy geometry on low-limit roads: goat-path penalty.
@@ -87,22 +130,32 @@ gh_custom_model:
   #   1 - λ·(1 - factor)   (λ=0 → 1.0 / no effect; λ=1 → factor).
   # Factors must stay ≤ 1 (penalize boring, never reward) — required for
   # landmark-search admissibility and by guardrail 4.
+  # Tiers over the apex_fun encoded value — the pipeline's own fun index,
+  # baked into the graph by `make import-graph`. The dial literally routes on
+  # the score the UI displays. (GH's built-in curvature EV proved too blunt:
+  # sweeper roads quantize to "straight" — measured, see repo history.)
+  #
+  # Steeper than the first cut: the original tiers only distinguished "bad"
+  # from "not bad" — anything ≥0.40 was unpenalized, so GraphHopper had no
+  # reason to prefer a great 0.7 road over a merely OK 0.41 one, and measured
+  # detours barely moved (+0.3-1.7 min on real East Grand Rapids test routes).
+  # This version keeps the gradient climbing all the way to the top tier
+  # (≥0.60, the ceiling — priority multipliers must stay ≤1, guardrail 4), so
+  # a short really-good segment is worth detouring for, not just avoiding bad
+  # ones.
   priority:
-    - name: boring_highways
-      condition: "road_class == MOTORWAY || road_class == TRUNK"
-      factor: 0.25
-    - name: conflict_prone       # driveways, stop signs, blind access
-      condition: "road_class == RESIDENTIAL || road_class == SERVICE || road_class == LIVING_STREET"
-      factor: 0.30
-    - name: traffic_primary
-      condition: "road_class == PRIMARY"
+    - name: not_fun
+      condition: "apex_fun < 0.15"
+      factor: 0.15
+    - name: barely_fun
+      condition: "apex_fun < 0.30"
+      factor: 0.35
+    - name: moderately_fun
+      condition: "apex_fun < 0.45"
       factor: 0.60
-    - name: straight_edges       # curvature: 1.0 = perfectly straight
-      condition: "curvature > 0.995"
-      factor: 0.55
-    - name: mostly_straight
-      condition: "curvature > 0.98"
-      factor: 0.80
+    - name: decent_fun
+      condition: "apex_fun < 0.60"
+      factor: 0.85
   # Lambda-independent hard penalties (applied whenever λ > 0).
   always:
     - name: unpaved_no_thanks    # Miata rule
@@ -112,12 +165,54 @@ gh_custom_model:
 routing:
   # Fun dial values for the candidate routes (fastest λ=0 is always computed).
   candidate_lambdas: [0.3, 0.6, 0.9]
-  # Never return a 3-hour detour for a 20-minute errand.
-  max_time_multiplier: 2.0
+  # Wander budget: candidates slower than this × fastest are dropped.
+  # (Still a cap — never a 3-hour detour for a 20-minute errand.)
+  max_time_multiplier: 3.0
   # Candidates within these tolerances of an already-kept route are dropped.
   dedupe: { time_s: 30, distance_m: 200 }
+
+seek:
+  # Peak-seeking: deliberately route through short, genuinely great roads that
+  # a length-weighted average would otherwise ignore. (Measured motivation: a
+  # 0.567-scoring curve on Hall St SW is 261 m of a 39-mile trip — routing
+  # through it moves the route average by ~0.001, so plain weighting will
+  # never chase it, but a driver absolutely wants it.)
+  #
+  # Only segments at or above this score are indexed as seek targets — keeps
+  # the CouchDB view small and the search fast.
+  min_fun_index: 0.40
+  # Grid cell for the coordinate index, degrees (~2.2 km at Michigan latitudes).
+  cell_size_deg: 0.02
+  # How far off the straight origin→destination line to look, km.
+  corridor_buffer_km: 6
+  # Don't detour for a sliver. Set just under the length of a real find (the
+  # 261 m Hall St SW curve) — below this the index fills with 100-200 m bends
+  # on urban arterials that aren't worth leaving your route for.
+  min_length_m: 250
+  # Seek targets to try routing through (each costs one routing call).
+  max_targets: 3
+  # Drop the seek candidate if it costs more than this multiple of fastest time.
+  max_time_multiplier: 2.5
 
 cache:
   route_ttl_seconds: 86400
   # Origin/destination snapped to a grid cell for cache keys (~550 m).
   cell_size_deg: 0.005
+
+# ---------------------------------------------------------------------------
+# Google Maps handoff (Phase 2)
+# ---------------------------------------------------------------------------
+
+handoff:
+  # Practical cap on intermediate waypoints in a Maps deep link (CLAUDE-ref §5).
+  max_waypoints: 9
+  # A chain gap whose route path exceeds its straight chord by more than this
+  # gets a waypoint at the detour apex — excess length is what Google's
+  # fastest-route preference would shortcut (smooth curve sag is harmless and
+  # deliberately NOT counted). Remaining excess above this ⇒ not "pinned":
+  # warn and offer GPX instead of silently emitting a link Google reroutes.
+  max_gap_excess_m: 400
+  # Verified mode only (APEX_HANDOFF_VERIFY): Google's returned overview
+  # polyline is coarser than our geometry, so its threshold is looser.
+  verify_max_deviation_m: 250
+  verify_max_attempts: 3

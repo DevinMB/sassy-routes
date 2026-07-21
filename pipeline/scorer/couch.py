@@ -18,6 +18,32 @@ class CouchWriter:
         self._client.put(f"/{self._db}").raise_for_status()
         logger.info("recreated db %s", self._db)
 
+    def put_seek_view(self, min_fun: float) -> None:
+        """Index high-fun segments by grid cell, for corridor peak-seeking.
+
+        The threshold is baked into the map function (CouchDB views are JS), so
+        it's generated from scoring.yaml rather than hardcoded — guardrail 5.
+        """
+        design = {
+            "_id": "_design/seek",
+            "views": {
+                "by_cell": {
+                    "map": (
+                        "function(doc){"
+                        f"if(doc.type==='segment'&&doc.cell&&doc.fun_index>={min_fun}){{"
+                        "emit(doc.cell,{fun:doc.fun_index,mid:doc.mid,"
+                        "name:doc.name,length_m:doc.length_m,highway:doc.highway});"
+                        "}}"
+                    )
+                }
+            },
+        }
+        resp = self._client.put(f"/{self._db}/_design/seek", json=design)
+        resp.raise_for_status()
+        # build the index now so the first user request isn't the one that waits
+        self._client.get(f"/{self._db}/_design/seek/_view/by_cell", params={"limit": 1})
+        logger.info("seek view ready (min_fun=%s)", min_fun)
+
     def bulk(self, docs: list[dict]) -> None:
         if not docs:
             return

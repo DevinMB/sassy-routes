@@ -10,6 +10,7 @@ Phase 3 moves this onto Kafka; it must stay fully independent of the online
 routing path (guardrail 3).
 """
 import logging
+import math as mth
 import time
 from array import array
 
@@ -51,6 +52,8 @@ class ScorePass(osmium.SimpleHandler):
         self.scored = 0
         self.skipped = 0
         self.no_elevation = 0
+        # (way_id, fun×100) pairs for the GraphHopper apex_fun encoded value
+        self.fun_rows: list[tuple[int, int]] = []
 
     def way(self, w):
         if w.tags.get("highway") not in CAR_HIGHWAYS:
@@ -83,7 +86,15 @@ class ScorePass(osmium.SimpleHandler):
             return
         doc["_id"] = f"way:{w.id}"
         doc["scoring_version"] = self.cfg["version"]
+        # Midpoint + grid cell make the segment findable by area, which is what
+        # peak-seeking needs (route deliberately through a great short road).
+        # Without these the docs carry no geometry at all.
+        mid = len(lats_np) // 2
+        cell = self.cfg["seek"]["cell_size_deg"]
+        doc["mid"] = [round(float(lats_np[mid]), 6), round(float(lngs_np[mid]), 6)]
+        doc["cell"] = [int(mth.floor(doc["mid"][0] / cell)), int(mth.floor(doc["mid"][1] / cell))]
         self.buffer.append(doc)
+        self.fun_rows.append((w.id, round(doc["fun_index"] * 100)))
         self.scored += 1
         if len(self.buffer) >= BATCH:
             self.couch.bulk(self.buffer)
@@ -121,6 +132,17 @@ def main() -> None:
         "pass 2 done in %.0fs: scored=%d skipped=%d no_elevation=%d",
         time.time() - t1, p2.scored, p2.skipped, p2.no_elevation,
     )
+
+    couch.put_seek_view(cfg["seek"]["min_fun_index"])
+
+    # scores for GraphHopper's apex_fun encoded value (read by gh-import;
+    # run `make import-graph` after this to bake them into the routing graph)
+    csv_path = env("APEX_FUN_CSV", "/data/scores/apex-fun.csv")
+    with open(csv_path, "w") as fh:
+        fh.write("way_id,fun\n")
+        for way_id, fun in p2.fun_rows:
+            fh.write(f"{way_id},{fun}\n")
+    logger.info("wrote %d fun scores to %s", len(p2.fun_rows), csv_path)
 
     # cached route responses embed fun indexes — stale after a rescore
     CouchWriter(env("APEX_COUCHDB_URL", "http://couchdb:5984"), "route_cache").recreate_db()
