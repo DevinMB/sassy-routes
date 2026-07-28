@@ -58,6 +58,11 @@ class GraphHopperClient:
         if via is not None:
             points.append([via.lng, via.lat])
         points.append([destination.lng, destination.lat])
+        return self.route_points(points, custom_model)
+
+    def route_points(self, points: list[list[float]], custom_model: dict) -> dict:
+        """Flexible (LM) route through an explicit [lng,lat] point list — used
+        for multi-waypoint loops (take-me-for-a-drive) as well as single vias."""
         body = {
             "points": points,
             "profile": "car",

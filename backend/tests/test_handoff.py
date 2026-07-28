@@ -4,10 +4,11 @@ import respx
 
 from app.deeplink import maps_deep_link
 from app.verify import HandoffVerifier, decode_polyline
-from app.waypoints import compress
+from app.waypoints import compress, refine_on_road
 
 MAX_WP = 9
 MAX_EXCESS = 400.0
+CURVE_PENALTY = 4.0
 
 # ---------------------------------------------------------------- compression
 
@@ -76,6 +77,72 @@ def test_waypoint_budget_exhaustion_reports_unpinned():
 def test_two_point_route_trivially_pinned():
     idxs, excess, pinned = compress([[-84.0, 42.0], [-83.9, 42.1]], MAX_WP, MAX_EXCESS)
     assert idxs == [] and pinned
+
+
+# ------------------------------------------------------------- refine on road
+
+CLEAR_M = 40.0
+WINDOW_FRAC = 0.35
+
+
+def dense_detour(bulge_deg=0.012, n=41):
+    """A dense east-west route with a smooth northward bulge in the middle —
+    like a real GraphHopper polyline. Two OSM ways meet at the apex."""
+    import math
+    pts = []
+    for i in range(n):
+        t = i / (n - 1)
+        pts.append([-84.0 - t * 0.05, 42.0 + bulge_deg * math.sin(math.pi * t)])
+    apex = n // 2
+    return pts, apex, [[0, apex, 111], [apex, n - 1, 222]]
+
+
+def _refine(coords, ivals, wp):
+    return refine_on_road(coords, ivals, wp, 400.0, CURVE_PENALTY, CLEAR_M, WINDOW_FRAC)
+
+
+def test_refine_moves_waypoint_off_a_junction():
+    coords, apex, ivals = dense_detour()
+    raw, _, _ = compress(coords, MAX_WP, 200.0)
+    assert apex in raw, "the bulge apex (a junction) should be a chosen waypoint"
+
+    refined, _, pinned = _refine(coords, ivals, raw)
+    assert apex not in refined, "waypoint must not sit on the junction"
+    assert pinned, "staying near centre must keep the detour pinned"
+
+
+def test_refine_stays_near_the_detour_centre():
+    # the refined waypoint must remain deep in the detour, not slide to an end
+    coords, apex, ivals = dense_detour()
+    raw, _, _ = compress(coords, MAX_WP, 200.0)
+    refined, _, _ = _refine(coords, ivals, raw)
+    # within the window: no more than ~40% of the way from centre to an end
+    assert all(abs(i - apex) <= 0.4 * apex for i in refined)
+
+
+def test_refine_prefers_straighter_vertices_in_the_band():
+    # single way (no junctions) with a sharp kink offset from centre; a high
+    # curve penalty must make refine avoid the kink for a straighter neighbour
+    import math
+    coords = [[-84.0 - i * 0.004, 42.0 + 0.006 * math.sin(math.pi * i / 30)] for i in range(31)]
+    coords[16] = [coords[16][0], coords[16][1] + 0.004]  # sharp kink at 16
+    ivals = [[0, 30, 111]]
+    refined, _, _ = refine_on_road(coords, ivals, [16], 400.0, 50.0, CLEAR_M, WINDOW_FRAC)
+    assert refined[0] != 16
+
+
+def test_refine_no_waypoints_is_noop():
+    assert _refine(straight(), [[0, 29, 111]], []) == ([], 0.0, True)
+
+
+def test_refine_keeps_waypoints_ordered_and_in_bounds():
+    coords = sawtooth()
+    raw, _, _ = compress(coords, MAX_WP, MAX_EXCESS)
+    ivals = [[0, len(coords) - 1, 111]]
+    refined, _, _ = _refine(coords, ivals, raw)
+    assert len(refined) == len(raw)
+    assert refined == sorted(refined)
+    assert all(0 < i < len(coords) - 1 for i in refined)
 
 
 # ------------------------------------------------------------------ deep link

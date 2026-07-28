@@ -69,6 +69,25 @@ export async function geocode(query: string): Promise<GeocodeResult[]> {
   return body.results
 }
 
+export interface DriveResult {
+  distance_m: number
+  time_s: number
+  fun_index: number | null
+  coordinates: [number, number][]
+  handoff: Handoff
+  why: RouteWhy | null
+}
+
+export async function fetchDrive(origin: LatLng, duration_min: number): Promise<DriveResult> {
+  const res = await fetch('/api/drive', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ origin, duration_min }),
+  })
+  if (!res.ok) throw new Error(await errorMessage(res, 'drive'))
+  return res.json()
+}
+
 export interface ClientEvent {
   type: 'maps_opened'
   fun_dial?: number

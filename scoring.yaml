@@ -212,13 +212,36 @@ seek:
   # shouldn't crowd out everything else); at half_km off the line a target is
   # worth half as much.
   length_cap_m: 3000
-  corridor_half_km: 3.0
+  corridor_half_km: 6.0
 
   # A detour has to be EARNED by the road, not merely fit under the ceiling.
   # Allowed extra time ≈ this × km of road × its fun index, so a 900 m road at
   # 0.93 buys about 10 minutes. Measured motivation: seek offered +35 min on a
   # 50 min trip for one 902 m road, which is not a trade a driver wants.
-  detour_minutes_per_km: 12
+  detour_minutes_per_km: 20
+
+drive:
+  # "Take me for a drive": a randomized fun loop for a time budget.
+  # Distance ↔ time. Fun loops run slower than highways; tune by real drives.
+  avg_speed_kmh: 60
+  # Per-leg aim radius = target distance × this. In practice a loop through two
+  # fun clusters runs ~4.4 straight-line legs, not 3 (roads wander), so measured
+  # loops came out ~20% long at 0.30 — 0.23 lands them near the requested time.
+  radius_fraction: 0.23
+  # Aim points get ±this fraction of jitter on their radius.
+  radius_jitter: 0.20
+  # Angular gap between the two aim points, degrees (makes a loop, not there-
+  # and-back). Randomized in this range.
+  bearing_separation_deg: [45, 120]
+  # An aim point snaps to a high-fun cluster within this distance, or is skipped.
+  snap_max_km: 10
+  # Accept a loop whose time lands within this fraction of the request.
+  time_tolerance: 0.30
+  # Random bearings to try before giving up (each = a couple of routing calls).
+  max_attempts: 8
+  # Clamp the requested duration (minutes) — anti-DoS and keeps loops sane.
+  min_duration_min: 15
+  max_duration_min: 240
 
 cache:
   route_ttl_seconds: 86400
@@ -238,6 +261,17 @@ handoff:
   # deliberately NOT counted). Remaining excess above this ⇒ not "pinned":
   # warn and offer GPX instead of silently emitting a link Google reroutes.
   max_gap_excess_m: 400
+  # After compression picks which detours to pin, each waypoint is slid to the
+  # cleanest spot on its road so Google snaps it without looping/U-turning:
+  # clearance from the nearest junction, minus this × the vertex's turn angle
+  # (so straight spots win). At 4, a 30° bend costs 120 m of clearance-equiv —
+  # strongly prefers straight, mid-detour points over sharp apexes at junctions.
+  waypoint_curve_penalty_m_per_deg: 4
+  # A waypoint is kept within this fraction of the detour's half-length from its
+  # centre (so the pin holds), and within that band prefers a vertex at least
+  # this far from any mid-detour junction (so Google snaps without looping).
+  waypoint_center_window_frac: 0.35
+  waypoint_junction_clearance_m: 40
   # Verified mode only (APEX_HANDOFF_VERIFY): Google's returned overview
   # polyline is coarser than our geometry, so its threshold is looser.
   verify_max_deviation_m: 250
