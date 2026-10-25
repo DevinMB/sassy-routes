@@ -86,6 +86,21 @@ class RouteResponse(BaseModel):
     candidates: list[RouteCandidate]
 
 
+class DriveRequest(BaseModel):
+    origin: LatLng
+    duration_min: float = Field(gt=0)
+
+
+class DriveResponse(BaseModel):
+    # A single randomized fun loop starting and ending at origin.
+    distance_m: float
+    time_s: float
+    fun_index: float | None
+    coordinates: list[tuple[float, float]]
+    handoff: Handoff
+    why: RouteWhy | None = None
+
+
 class GeocodeResult(BaseModel):
     label: str
     lat: float

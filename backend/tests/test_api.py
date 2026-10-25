@@ -5,6 +5,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from app.main import _cache_key, app
+from app.overlap import retraversal_penalty_s
 from app.schemas import LatLng
 from app.scoring import scoring
 
@@ -139,30 +140,113 @@ def test_peak_seeking_adds_a_candidate_through_a_standout_road():
     assert body["points"][1] == [-83.40, 42.30]
 
 
-@respx.mock
-def test_seek_declines_a_detour_the_road_does_not_earn():
-    # A short road can't justify a long detour beyond what the fun route
-    # already costs — the extra 10 min here buys 261 m, which earns ~1.8 min.
-    slow_seek = gh_path(30000, 1_500_000, COORDS_FUN, [[0, 2, 222]])
+def _seek_attempt(seek_route, road=None):
+    """Route request where the three λ candidates collapse to one and the
+    seek attempt returns `seek_route`."""
     respx.get(f"{GH}/route").mock(return_value=httpx.Response(200, json=FASTEST))
     respx.post(f"{GH}/route").mock(
         side_effect=[
             httpx.Response(200, json=FUN_ROUTE),  # λ=0.3 → kept, 900s baseline
             httpx.Response(200, json=FUN_ROUTE),  # λ=0.6 → deduped
             httpx.Response(200, json=FUN_ROUTE),  # λ=0.9 → deduped
-            httpx.Response(200, json=slow_seek),  # seek attempt: +10 min
+            httpx.Response(200, json=seek_route),  # seek attempt
         ]
     )
     mock_couch(SEGMENT_ROWS)
     respx.post(f"{COUCH}/segments/_design/seek/_view/by_cell").mock(
         return_value=httpx.Response(200, json={"rows": [{
-            "value": {
+            "value": road or {
                 "fun": 0.57, "mid": [42.30, -83.40], "highway": "tertiary",
                 "name": "Brief Curve", "length_m": 261.0,
             }
         }]})
     )
-    resp = client.post("/api/route", json={"origin": ANN_ARBOR, "destination": DETROIT})
+    return client.post("/api/route", json={"origin": ANN_ARBOR, "destination": DETROIT})
+
+
+@respx.mock
+def test_a_short_great_road_earns_the_floor_detour():
+    """261 m earns only ~4 min on the per-km term, but the owner's stated
+    preference is that a roundabout way is worth +20-30 min outright. This
+    +10 min detour sits inside the floor and must be offered.
+
+    (Supersedes the earlier calibration, which rejected exactly this trade.)"""
+    modest_seek = gh_path(30000, 1_500_000, COORDS_FUN, [[0, 2, 222]])  # +10 min
+    resp = _seek_attempt(modest_seek)
+    assert resp.status_code == 200
+    assert any(c["sought"] is not None for c in resp.json()["candidates"])
+
+
+@respx.mock
+def test_seek_still_declines_a_detour_past_the_floor():
+    """The floor raises the budget; it doesn't remove it. A short road still
+    can't justify an unbounded wander."""
+    floor_min = scoring()["seek"]["detour_floor_minutes"]
+    over_floor_ms = 900_000 + int((floor_min + 15) * 60 * 1000)
+    resp = _seek_attempt(gh_path(30000, over_floor_ms, COORDS_FUN, [[0, 2, 222]]))
+    assert resp.status_code == 200
+    assert all(c["sought"] is None for c in resp.json()["candidates"])
+
+
+@respx.mock
+def test_seek_declines_a_road_it_would_have_to_drive_twice():
+    """The out-and-back guard: same road, same modest +10 min detour that the
+    floor accepts above, but the returned geometry doubles back. Re-driven
+    road is charged against the detour budget, so this must be rejected."""
+    out_and_back = [[-84.0, 42.0], [-84.0, 42.01], [-84.0, 42.02],
+                    [-84.0, 42.01], [-84.0, 42.0]]
+    doubling_back = gh_path(30000, 1_500_000, out_and_back, [[0, 4, 222]])
+    resp = _seek_attempt(doubling_back)
+    assert resp.status_code == 200
+    assert all(c["sought"] is None for c in resp.json()["candidates"])
+
+
+@respx.mock
+def test_seek_declines_a_road_it_has_to_turn_around_to_reach():
+    """The reported defect, at the size it actually shipped at.
+
+    Pinning a road's endpoint makes GraphHopper touch that exact point, so when
+    the natural approach joins the road *inside* the tip it drives past and
+    turns around — a 122 m overshoot ending in a 175° reversal.
+
+    122 m of re-driven road costs only ~3.7 min at the per-km rate, well inside
+    the 25 min floor, which is exactly why a user saw it. The first assertion
+    pins that down, so this test fails for the right reason if the flat charge
+    is ever removed rather than quietly passing on the distance term.
+    """
+    scfg = scoring()["seek"]
+    overshoot_deg = 122 / 110574.0
+    coords = [[-84.0, 42.0], [-84.0, 42.0 + overshoot_deg], [-84.0, 42.0]]
+    detour_s = 600.0  # the same +10 min the floor accepts above
+    assert (
+        detour_s
+        + retraversal_penalty_s(coords, scfg["retraversal_penalty_minutes_per_km"])
+        < scfg["detour_floor_minutes"] * 60
+    ), "distance alone must not reject this — the flat charge is what does"
+
+    turning_around = gh_path(30000, 1_500_000, coords, [[0, 2, 222]])
+    resp = _seek_attempt(turning_around)
+    assert resp.status_code == 200
+    assert all(c["sought"] is None for c in resp.json()["candidates"])
+
+
+@respx.mock
+def test_beating_the_baseline_does_not_buy_a_double_traverse():
+    """Measured escape: a seek route that comes in faster than the λ=0.9
+    baseline had a negative detour, which cancelled the re-traversal charge
+    and let a 0.96 km out-and-back through. Saved time must not pay for it."""
+    scfg = scoring()["seek"]
+    # The 261 m road below earns only the floor. Double back over just enough
+    # road that the penalty ALONE exceeds that budget (so clamped ⇒ rejected),
+    # while staying small enough that a negative detour would cancel it back
+    # under (so unclamped ⇒ wrongly accepted). Sized from config, not hardcoded.
+    earned_s = scfg["detour_floor_minutes"] * 60.0
+    redrive_km = earned_s / 60.0 / scfg["retraversal_penalty_minutes_per_km"] * 1.15
+    delta_deg = redrive_km / 110.574
+    out_and_back = [[-84.0, 42.0], [-84.0, 42.0 + delta_deg], [-84.0, 42.0]]
+    # 500 s: well under the 900 s λ baseline, so extra_s is comfortably negative
+    faster_but_doubling_back = gh_path(30000, 500_000, out_and_back, [[0, 2, 222]])
+    resp = _seek_attempt(faster_but_doubling_back)
     assert resp.status_code == 200
     assert all(c["sought"] is None for c in resp.json()["candidates"])
 
@@ -312,3 +396,62 @@ def test_health_reports_graphhopper_state():
     resp = client.get("/api/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "graphhopper": True}
+
+
+# --- /api/drive loop selection ----------------------------------------------
+# A loop is supposed to come back a different way, but aim points snap to fun
+# cluster centroids rather than road ends, so legs can arrive and leave the
+# same way (measured at 5-7.6% of every loop before the penalty existed).
+
+DRIVE_ORIGIN = {"lat": 42.9634, "lng": -85.6681}
+
+# Fun clusters blanketing the reachable area, so whichever random bearing the
+# generator picks has somewhere to aim. `aggregate` keys off row["key"] (the
+# grid cell), not the value's midpoint — a mock without keys yields no tiles
+# and the endpoint 422s before any loop is attempted.
+_CELL = 0.02
+DRIVE_TILES = {"rows": [
+    {"key": [la, ln], "value": {"fun": 0.8, "length_m": 900.0}}
+    for la in range(int(42.76 / _CELL), int(43.17 / _CELL))
+    for ln in range(int(-85.88 / _CELL), int(-85.46 / _CELL))
+]}
+
+# 60 min requested. Both land inside the 30% tolerance; one doubles back.
+_CLEAN = [[-85.66, 42.96], [-85.60, 42.99], [-85.72, 42.93], [-85.66, 42.96]]
+_DOUBLES_BACK = [[-85.66, 42.96], [-85.60, 42.99], [-85.66, 42.96],
+                 [-85.60, 42.99], [-85.66, 42.96]]
+
+
+def _mock_drive(loop_responses):
+    respx.post(f"{COUCH}/segments/_design/seek/_view/by_cell").mock(
+        return_value=httpx.Response(200, json=DRIVE_TILES)
+    )
+    respx.post(f"{COUCH}/segments/_all_docs").mock(
+        return_value=httpx.Response(200, json={"rows": SEGMENT_ROWS})
+    )
+    respx.post(f"{GH}/route").mock(side_effect=loop_responses)
+    return client.post("/api/drive", json={"origin": DRIVE_ORIGIN, "duration_min": 60})
+
+
+@respx.mock
+def test_drive_prefers_the_loop_that_does_not_double_back():
+    """Both loops are on time; the clean one must win."""
+    dirty = gh_path(60000, 3_500_000, _DOUBLES_BACK, [[0, 4, 222]])
+    clean = gh_path(60000, 3_500_000, _CLEAN, [[0, 3, 222]])
+    resp = _mock_drive([httpx.Response(200, json=dirty),
+                        httpx.Response(200, json=clean)] * 8)
+    assert resp.status_code == 200
+    assert resp.json()["coordinates"] == [list(c) for c in _CLEAN]
+
+
+@respx.mock
+def test_drive_honours_the_requested_duration_over_cleanliness():
+    """A spotless loop that takes half again as long is not what was asked
+    for. Measured regression: folding the penalty into the time error let a
+    90 min loop win a 60 min request."""
+    on_time_dirty = gh_path(60000, 3_500_000, _DOUBLES_BACK, [[0, 4, 222]])
+    clean_but_long = gh_path(90000, 5_400_000, _CLEAN, [[0, 3, 222]])  # 90 min
+    resp = _mock_drive([httpx.Response(200, json=clean_but_long),
+                        httpx.Response(200, json=on_time_dirty)] * 8)
+    assert resp.status_code == 200
+    assert resp.json()["time_s"] == 3500.0  # the on-time loop, despite doubling back

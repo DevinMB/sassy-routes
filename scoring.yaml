@@ -6,7 +6,7 @@
 # Values are provisional; tune with real drives.
 # (version feeds route-cache keys: bump it whenever weights change so stale
 # cached candidates aren't served)
-version: 6
+version: 8
 
 # ---------------------------------------------------------------------------
 # Offline segment scoring (pipeline → CouchDB `segments`)
@@ -87,6 +87,41 @@ road_class:
   service: 0.0
   road: 0.3
 
+  # Multiplicative veto, applied like the surface and safety gates below.
+  #
+  # The scores above are *blend components* carrying only `blend.road_class`
+  # (0.25) of the total, so setting one to 0.0 subtracts at most a quarter of
+  # the score — it reads like an exclusion but is really a haircut. That is not
+  # enough to keep a parking lot out: aisle geometry is nothing but tight 90°
+  # corners, so it saturates the 0.60-weighted curvature term and a service way
+  # still scores up to 0.60 + 0.15 = 0.755. Measured before this gate existed:
+  # 219,383 of the 278,965 ways in the seek index (79%) were `service`, 64,047
+  # of them at or above 0.60 — GraphHopper's top, entirely *unpenalised* tier.
+  # A real route out of Grand Rapids drove 2,554 m of parking lot, dipping off
+  # the road and back four times (the reported "goes through a company's
+  # parking lot").
+  #
+  # `dead_end` has the same story. It is documented above as an override that
+  # "beats every promotion", and as a component it cannot be: at 0.02 it scores
+  # a service way *higher* than `service: 0.0` does, which is why the very top
+  # of the index was dead-end driveways at exactly 0.755.
+  #
+  # These belong here rather than in the blend because they aren't a matter of
+  # degree — a parking aisle is not a road you drive for pleasure however good
+  # its geometry, so it has to be able to lose on class alone. Values put a
+  # maximally-curvy example below `seek.min_fun_index` (0.40) and inside the
+  # `not_fun` routing tier (< 0.15): 0.755 × 0.05 = 0.038.
+  # Ways not listed are ungated (1.0).
+  gate:
+    service: 0.05
+    living_street: 0.10
+    # Applied to any way with an endpoint no other way touches, whatever its
+    # class — you cannot drive *through* a cul-de-sac, so it is never a road
+    # worth going out of your way for. Note this also catches ways clipped by
+    # the edge of the OSM extract, which look dead-ended because their
+    # continuation isn't in the file; at Michigan's borders that is acceptable.
+    dead_end: 0.10
+
 surface:
   # Multiplicative gate. Low sports car (Miata ND): unpaved kills the score.
   unpaved_values: [gravel, fine_gravel, unpaved, compacted, dirt, ground,
@@ -161,6 +196,26 @@ gh_custom_model:
     - name: unpaved_no_thanks    # Miata rule
       condition: "surface == GRAVEL || surface == FINE_GRAVEL || surface == UNPAVED || surface == COMPACTED || surface == DIRT || surface == GROUND || surface == GRASS || surface == SAND || surface == COBBLESTONE || surface == WOOD || surface == OTHER"
       factor: 0.10
+    # Parking aisles, drive-thrus and business-park service lanes. The tiers
+    # above read `apex_fun` and nothing else, so before this rule a service way
+    # baked in at 0.67 sat in the top tier and was routed through in preference
+    # to an ordinary road — the router had no concept of road class at all.
+    # Measured on the reported route: 2,554 m of service road became 45 m, and
+    # the route got 4.9 min *faster* in the process.
+    #
+    # This duplicates the offline `road_class.gate` on purpose. The gate fixes
+    # the stored score but only reaches the router through `apex_fun`, which is
+    # baked into the graph at import time; this rule reads GraphHopper's own
+    # `road_class` encoded value and so also covers ways the pipeline never
+    # scored, and takes effect on a backend restart rather than a re-import.
+    #
+    # A penalty, not a ban: reaching a destination inside a business park or a
+    # mall still needs its access road, and at 0.05 the router will take one
+    # when there is genuinely no alternative (the 45 m above is the final
+    # driveway) while never choosing one for fun.
+    - name: not_a_road_you_drive
+      condition: "road_class == SERVICE || road_class == LIVING_STREET"
+      factor: 0.05
 
 routing:
   # Fun dial values for the candidate routes (fastest λ=0 is always computed).
@@ -212,13 +267,82 @@ seek:
   # shouldn't crowd out everything else); at half_km off the line a target is
   # worth half as much.
   length_cap_m: 3000
-  corridor_half_km: 3.0
+  corridor_half_km: 6.0
 
   # A detour has to be EARNED by the road, not merely fit under the ceiling.
-  # Allowed extra time ≈ this × km of road × its fun index, so a 900 m road at
-  # 0.93 buys about 10 minutes. Measured motivation: seek offered +35 min on a
-  # 50 min trip for one 902 m road, which is not a trade a driver wants.
-  detour_minutes_per_km: 12
+  # Allowed extra time ≈ this × km of road × its fun index.
+  detour_minutes_per_km: 30
+  # ...but never less than this, however short the road. The per-km term alone
+  # underserves exactly the roads seek exists for: a 900 m gem at 0.93 earns
+  # only ~17 min on length, while the owner's stated preference is that "a
+  # longer, roundabout way to a destination beats a boring direct one — worth
+  # +20 to 30 minutes." That preference is an absolute number of minutes, not
+  # a multiple of trip length, so it belongs here as a floor.
+  # Supersedes the older calibration that capped this near 10 min: that was
+  # tuned before out-and-back spurs were fixed, when a "detour" often bought
+  # re-driving the same road rather than new road.
+  detour_floor_minutes: 25
+  # Charged against the budget above for road driven twice (see overlap.py).
+  # Pinning both ends of the sought road removes ordinary out-and-backs at
+  # source, so this is the backstop for what geometry can't prevent — mainly
+  # genuine dead ends. Deliberately a penalty, not a ban: a spectacular
+  # dead-end road can still outbid it. Start high enough that ordinary spurs
+  # vanish (1 km re-driven costs 30 min, more than any road earns) and tune
+  # down if a road you'd actually double back for gets rejected.
+  retraversal_penalty_minutes_per_km: 30
+
+  # ...plus a flat charge for doubling back AT ALL, whatever the distance.
+  #
+  # The per-km rate alone cannot price the defect that actually reached a user.
+  # Pinning a road's endpoints makes GraphHopper touch that exact point, so
+  # when the natural approach joins the road *inside* the tip it drives past
+  # and turns around — 122 m of overshoot ending in a 175° reversal. At the
+  # rate above that is 3.7 min against a 25 min budget: waved straight through,
+  # while being the most obviously-broken thing on the map. There is no
+  # engine-side fix to lean on either, since GraphHopper 9.0 silently ignores
+  # `pass_through` (see graphhopper.py).
+  #
+  # Set above `detour_floor_minutes` minus a typical detour so a road earning
+  # only the floor cannot keep a double-back, while a long, great road (a 3 km
+  # road at 0.9 earns 81 min) can still outbid it — the same "weight, not ban"
+  # stance as the rate above. Measured separation is wide and needs no fine
+  # tuning: every route showing the defect re-drove 122-4701 m, while every
+  # good seek candidate across seven test routes re-drove exactly 0 m.
+  retraversal_fixed_minutes: 20
+  # Below this, treat a repeat as shared geometry at a junction rather than
+  # doubling back, and charge nothing. Well under the 122 m real defect.
+  retraversal_ignore_m: 25
+
+drive:
+  # "Take me for a drive": a randomized fun loop for a time budget.
+  # Distance ↔ time. Fun loops run slower than highways; tune by real drives.
+  avg_speed_kmh: 60
+  # Per-leg aim radius = target distance × this. In practice a loop through two
+  # fun clusters runs ~4.4 straight-line legs, not 3 (roads wander), so measured
+  # loops came out ~20% long at 0.30 — 0.23 lands them near the requested time.
+  radius_fraction: 0.23
+  # Aim points get ±this fraction of jitter on their radius.
+  radius_jitter: 0.20
+  # Angular gap between the two aim points, degrees (makes a loop, not there-
+  # and-back). Randomized in this range.
+  bearing_separation_deg: [45, 120]
+  # An aim point snaps to a high-fun cluster within this distance, or is skipped.
+  snap_max_km: 10
+  # Accept a loop whose time lands within this fraction of the request.
+  time_tolerance: 0.30
+  # Weight on road driven twice when picking among the attempted loops. Aim
+  # points snap to fun-cluster centroids rather than to road ends, so a leg can
+  # arrive and leave the same way — measured at 5-7.6% of every loop generated.
+  # Scored alongside the time error (not as a filter), so a loop that doubles
+  # back loses to an equally-timed one that doesn't, and a slightly-off-time
+  # clean loop wins. Lower than seek's rate: a loop returning home past a good
+  # road it already drove is far less objectionable than an A→B route doing it.
+  retraversal_penalty_minutes_per_km: 12
+  # Random bearings to try before giving up (each = a couple of routing calls).
+  max_attempts: 8
+  # Clamp the requested duration (minutes) — anti-DoS and keeps loops sane.
+  min_duration_min: 15
+  max_duration_min: 240
 
 cache:
   route_ttl_seconds: 86400
@@ -238,6 +362,17 @@ handoff:
   # deliberately NOT counted). Remaining excess above this ⇒ not "pinned":
   # warn and offer GPX instead of silently emitting a link Google reroutes.
   max_gap_excess_m: 400
+  # After compression picks which detours to pin, each waypoint is slid to the
+  # cleanest spot on its road so Google snaps it without looping/U-turning:
+  # clearance from the nearest junction, minus this × the vertex's turn angle
+  # (so straight spots win). At 4, a 30° bend costs 120 m of clearance-equiv —
+  # strongly prefers straight, mid-detour points over sharp apexes at junctions.
+  waypoint_curve_penalty_m_per_deg: 4
+  # A waypoint is kept within this fraction of the detour's half-length from its
+  # centre (so the pin holds), and within that band prefers a vertex at least
+  # this far from any mid-detour junction (so Google snaps without looping).
+  waypoint_center_window_frac: 0.35
+  waypoint_junction_clearance_m: 40
   # Verified mode only (APEX_HANDOFF_VERIFY): Google's returned overview
   # polyline is coarser than our geometry, so its threshold is looser.
   verify_max_deviation_m: 250

@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import { fetchRoute, postEvent, type GeocodeResult, type LatLng, type RouteCandidate } from './api'
+import {
+  fetchDrive,
+  fetchRoute,
+  postEvent,
+  type GeocodeResult,
+  type LatLng,
+  type RouteCandidate,
+} from './api'
 import { criteriaChips } from './criteria'
 import { downloadGpx } from './gpx'
 import MapView, { type RouteLine } from './MapView'
@@ -26,13 +33,46 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [locating, setLocating] = useState(false)
+  const [driveMinutes, setDriveMinutes] = useState(45)
+  const [driveActive, setDriveActive] = useState(false)
   const requestSeq = useRef(0)
   const sheet = useSheet()
+
+  const runDrive = () => {
+    if (!origin) {
+      setError('Set a start point first — search, tap the map, or use your location.')
+      return
+    }
+    const seq = ++requestSeq.current
+    setLoading(true)
+    setError(null)
+    setDestination(null)
+    fetchDrive(origin, driveMinutes)
+      .then((d) => {
+        if (requestSeq.current !== seq) return
+        setDriveActive(true)
+        // render the loop through the normal candidate pipeline
+        setCandidates([
+          { fun_dial: 1, dtime_s: 0, sought: null, ...d } as RouteCandidate,
+        ])
+        setSelected(0)
+      })
+      .catch((e: Error) => {
+        if (requestSeq.current === seq) {
+          setCandidates(null)
+          setError(e.message)
+        }
+      })
+      .finally(() => {
+        if (requestSeq.current === seq) setLoading(false)
+      })
+  }
 
   const setPlace = (which: 'origin' | 'destination', place: Place | null) => {
     setError(null)
     setCandidates(null)
     setSelected(0)
+    setDriveActive(false)
     if (which === 'origin') setOrigin(place)
     else setDestination(place)
   }
@@ -87,6 +127,7 @@ export default function App() {
     setCandidates(null)
     setSelected(0)
     setError(null)
+    setDriveActive(false)
   }
 
   useEffect(() => {
@@ -182,7 +223,26 @@ export default function App() {
           selectedLabel={destination?.label ?? null}
           onSelect={fromSearch('destination')}
         />
-        {loading && <p className="hint">Finding routes…</p>}
+        <div className="drive">
+          <span className="drive-or">or just go for a drive</span>
+          <div className="drive-row">
+            <label>
+              <input
+                type="number"
+                min={15}
+                max={240}
+                step={15}
+                value={driveMinutes}
+                onChange={(e) => setDriveMinutes(Number(e.target.value))}
+              />
+              min
+            </label>
+            <button className="drive-go" onClick={runDrive} disabled={loading}>
+              🎲 {driveActive ? 'Another one' : 'Surprise me'}
+            </button>
+          </div>
+        </div>
+        {loading && <p className="hint">{driveActive ? 'Planning your drive…' : 'Finding routes…'}</p>}
         {candidates && !loading && (
           <div className="candidates">
             {candidates.map((c, i) => (
@@ -193,7 +253,11 @@ export default function App() {
               >
                 <span className="candidate-head">
                   <span className="candidate-name">
-                    {c.sought ? 'Worth the detour' : dialLabel(c.fun_dial)}
+                    {driveActive
+                      ? '🔁 Your loop'
+                      : c.sought
+                        ? 'Worth the detour'
+                        : dialLabel(c.fun_dial)}
                   </span>
                   <span className="candidate-time">
                     {formatTime(c.time_s)}

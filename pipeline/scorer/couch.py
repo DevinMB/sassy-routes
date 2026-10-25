@@ -31,7 +31,7 @@ class CouchWriter:
                     "map": (
                         "function(doc){"
                         f"if(doc.type==='segment'&&doc.cell&&doc.fun_index>={min_fun}){{"
-                        "emit(doc.cell,{fun:doc.fun_index,mid:doc.mid,"
+                        "emit(doc.cell,{fun:doc.fun_index,mid:doc.mid,ends:doc.ends,"
                         "name:doc.name,length_m:doc.length_m,highway:doc.highway});"
                         "}}"
                     )
