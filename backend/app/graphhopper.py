@@ -43,32 +43,33 @@ class GraphHopperClient:
         return self._parse(resp)
 
     def custom_route(
-        self,
-        origin: LatLng,
-        destination: LatLng,
-        custom_model: dict,
-        via: LatLng | None = None,
+        self, origin: LatLng, destination: LatLng, custom_model: dict
     ) -> dict:
         """Flexible (LM) route with a per-request custom model — the fun dial.
 
-        `via` forces the route through a point (peak-seeking): GraphHopper
-        treats intermediate points as hard constraints.
+        Straight origin→destination. Anything that needs intermediate points
+        (peak-seeking, drive loops) builds its own list and calls
+        `route_points` — pinning a road takes both of its ends, which this
+        signature can't express.
         """
-        points = [[origin.lng, origin.lat]]
-        if via is not None:
-            points.append([via.lng, via.lat])
-        points.append([destination.lng, destination.lat])
+        points = [[origin.lng, origin.lat], [destination.lng, destination.lat]]
         return self.route_points(points, custom_model)
 
     def route_points(self, points: list[list[float]], custom_model: dict) -> dict:
         """Flexible (LM) route through an explicit [lng,lat] point list — used
         for multi-waypoint loops (take-me-for-a-drive) as well as single vias."""
+        # NOTE: no `pass_through` here. It reads like the fix for "a via point
+        # shouldn't force a U-turn if the road runs the other way", and it was
+        # in this body for exactly that reason, but GraphHopper 9.0 ignores it:
+        # the server accepts `"pass_through": "NOT_A_BOOL"` without complaint,
+        # exactly as it accepts an invented field name, and routes identically
+        # with it true, false and absent. Sending it bought nothing except the
+        # false impression that via U-turns were handled. They are not — the
+        # caller has to price the shape it got back (see overlap.py).
         body = {
             "points": points,
             "profile": "car",
             "ch.disable": True,
-            # a via-point shouldn't force a U-turn if the road runs the other way
-            "pass_through": True,
             "points_encoded": False,
             "instructions": False,
             "details": ["osm_way_id"],

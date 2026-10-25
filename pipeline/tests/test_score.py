@@ -166,6 +166,66 @@ def test_dead_end_override_beats_the_residential_promotion():
     assert stub["fun_index"] < promoted["fun_index"]
 
 
+def test_a_parking_lot_is_never_a_fun_road():
+    """The reported defect. Aisle geometry is nothing but tight corners, so a
+    service way saturates the 0.60-weighted curvature term; with road class as
+    a 0.25-weighted blend component, `service: 0.0` could only dock a quarter
+    of that and the lot still came out at 0.755. Measured consequence: 219,383
+    of the 278,965 ways in the seek index (79%) were service road, and a real
+    route drove 2,554 m of parking lot."""
+    lats, lngs = twisty_road()
+    mask = through_road(len(lats))
+    road = score_way({"highway": "tertiary"}, lats, lngs, mask, None, CFG)
+    parking_lot = score_way({"highway": "service"}, lats, lngs, mask, None, CFG)
+    # identical geometry — class alone must be able to sink it
+    assert road["components"]["curvature"] == parking_lot["components"]["curvature"]
+    assert parking_lot["fun_index"] < CFG["seek"]["min_fun_index"]
+    # and below the bottom routing tier, so the fun dial won't dive into one
+    assert parking_lot["fun_index"] < CFG["gh_custom_model"]["priority"][0]["factor"]
+
+
+def test_the_class_gate_cannot_be_outrun_by_perfect_geometry():
+    """A veto, not a haircut: no amount of curvature or elevation rescues a
+    class that isn't a road you drive for pleasure."""
+    lats, lngs = twisty_road()
+    mask = through_road(len(lats))
+    for highway in ("service", "living_street"):
+        scored = score_way({"highway": highway, "surface": "asphalt"},
+                           lats, lngs, mask, None, CFG)
+        ungated = (
+            CFG["blend"]["curvature"] * scored["components"]["curvature"]
+            + CFG["blend"]["elevation"] * scored["components"]["elevation"]
+            + CFG["blend"]["road_class"] * scored["components"]["road_class"]
+        )
+        assert scored["gates"]["road_class"] == CFG["road_class"]["gate"][highway]
+        assert scored["fun_index"] < ungated * 0.2
+
+
+def test_a_dead_end_is_gated_whatever_its_class():
+    """`dead_end` is documented as an override that beats every promotion, and
+    as a blend component it could not be one: at 0.02 it scored a service way
+    *higher* than `service: 0.0` did, which is why the very top of the seek
+    index was dead-end driveways at exactly 0.755."""
+    lats, lngs = twisty_road()
+    stub = no_junctions(len(lats))
+    stub[0] = True  # joins the network at one end only
+    for highway in ("tertiary", "unclassified", "residential"):
+        scored = score_way({"highway": highway}, lats, lngs, stub, None, CFG)
+        assert scored["gates"]["road_class"] == CFG["road_class"]["gate"]["dead_end"]
+        assert scored["fun_index"] < CFG["seek"]["min_fun_index"]
+
+
+def test_ordinary_road_classes_are_not_gated():
+    """The gate is a targeted veto, not a general suppressant — it must leave
+    the classes the app exists to find completely alone."""
+    lats, lngs = twisty_road()
+    mask = through_road(len(lats))
+    for highway in ("tertiary", "unclassified", "secondary", "primary"):
+        scored = score_way({"highway": highway}, lats, lngs, mask, None, CFG)
+        assert scored["gates"]["road_class"] == 1.0
+    assert score_way({"highway": "tertiary"}, lats, lngs, mask, None, CFG)["fun_index"] > 0.3
+
+
 def test_through_tertiary_is_unaffected_by_the_dead_end_rule():
     lats, lngs = twisty_road()
     scored = score_way({"highway": "tertiary"}, lats, lngs, through_road(len(lats)), None, CFG)

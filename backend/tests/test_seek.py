@@ -1,7 +1,7 @@
 import pytest
 
 from app.schemas import LatLng
-from app.seek import corridor_cells, earned_detour_s, rank_targets, target_value
+from app.seek import corridor_cells, earned_detour_s, rank_targets, target_value, via_points
 
 CFG = {
     "cell_size_deg": 0.02,
@@ -12,6 +12,8 @@ CFG = {
     "length_cap_m": 3000,
     "corridor_half_km": 3.0,
     "detour_minutes_per_km": 12,
+    "detour_floor_minutes": 0,  # off by default here; exercised explicitly below
+    "retraversal_penalty_minutes_per_km": 30,
 }
 
 # Grand Rapids → south, roughly the reported Hall St corridor.
@@ -19,11 +21,12 @@ ORIGIN = LatLng(lat=43.0097, lng=-85.6590)
 DEST = LatLng(lat=42.5430, lng=-85.8472)
 
 
-def row(fun, lat, lng, name, length_m=300.0, highway="tertiary"):
+def row(fun, lat, lng, name, length_m=300.0, highway="tertiary", ends=None):
     return {
         "value": {
             "fun": fun,
             "mid": [lat, lng],
+            "ends": ends,
             "name": name,
             "length_m": length_m,
             "highway": highway,
@@ -141,3 +144,66 @@ def test_respects_max_targets():
 def test_off_corridor_distance_is_reported():
     targets = rank_targets([row(0.7, 42.90, -85.72, "Near Rd")], ORIGIN, DEST, CFG)
     assert 0 <= targets[0]["off_corridor_km"] <= CFG["corridor_buffer_km"]
+
+
+# --- via points: the out-and-back fix ---------------------------------------
+# Routing to a way's midpoint makes GraphHopper solve origin→mid and
+# mid→destination independently, so a road whose efficient approach is
+# one-ended gets driven up and back down, turning around at the pin. Pinning
+# both ends makes it a through-traverse instead.
+
+NORTH_END = [42.9200, -85.7200]   # nearer ORIGIN (lat 43.01)
+SOUTH_END = [42.8600, -85.7300]   # nearer DEST (lat 42.54)
+
+
+def test_both_ends_are_pinned_so_the_road_is_driven_through():
+    target = {"lat": 42.89, "lng": -85.725, "ends": [NORTH_END, SOUTH_END]}
+    assert via_points(target, ORIGIN, DEST) == [
+        [-85.7200, 42.9200],
+        [-85.7300, 42.8600],
+    ]
+
+
+def test_ends_are_ordered_by_which_threads_the_trip():
+    """Same road, ends recorded the other way round in OSM — the router must
+    still enter from the origin side, not be sent to the far end first."""
+    target = {"lat": 42.89, "lng": -85.725, "ends": [SOUTH_END, NORTH_END]}
+    first, second = via_points(target, ORIGIN, DEST)
+    assert first == [-85.7200, 42.9200]   # north end, nearer the origin
+    assert second == [-85.7300, 42.8600]
+
+
+def test_ordering_flips_when_the_trip_runs_the_other_way():
+    target = {"lat": 42.89, "lng": -85.725, "ends": [NORTH_END, SOUTH_END]}
+    northbound = via_points(target, DEST, ORIGIN)
+    assert northbound[0] == [-85.7300, 42.8600]   # south end first, going north
+
+
+def test_segments_without_ends_fall_back_to_the_midpoint():
+    """Docs scored before the pipeline recorded `ends` must keep working —
+    seeking degrades to the old behaviour rather than breaking."""
+    target = {"lat": 42.89, "lng": -85.725, "ends": None}
+    assert via_points(target, ORIGIN, DEST) == [[-85.725, 42.89]]
+
+
+def test_rank_targets_carries_ends_through():
+    rows = [row(0.7, 42.90, -85.72, "Near Rd", ends=[NORTH_END, SOUTH_END])]
+    assert rank_targets(rows, ORIGIN, DEST, CFG)[0]["ends"] == [NORTH_END, SOUTH_END]
+
+
+# --- detour budget ----------------------------------------------------------
+
+
+def test_a_short_gem_still_earns_the_floor():
+    """The per-km term alone gives a 900 m road ~17 min; the owner's stated
+    preference is that a roundabout way is worth +20-30 min regardless."""
+    cfg = {**CFG, "detour_floor_minutes": 25}
+    target = {"fun_index": 0.93, "length_m": 902.0, "off_corridor_km": 2.4}
+    assert earned_detour_s(target, cfg) == pytest.approx(25 * 60)
+
+
+def test_the_floor_never_lowers_what_a_long_road_earns():
+    cfg = {**CFG, "detour_floor_minutes": 25}
+    long_road = {"fun_index": 0.9, "length_m": 6000.0, "off_corridor_km": 0.0}
+    assert earned_detour_s(long_road, cfg) == earned_detour_s(long_road, CFG)
+    assert earned_detour_s(long_road, cfg) > 25 * 60

@@ -93,6 +93,13 @@ class ScorePass(osmium.SimpleHandler):
         cell = self.cfg["seek"]["cell_size_deg"]
         doc["mid"] = [round(float(lats_np[mid]), 6), round(float(lngs_np[mid]), 6)]
         doc["cell"] = [int(mth.floor(doc["mid"][0] / cell)), int(mth.floor(doc["mid"][1] / cell))]
+        # Both ends, so seeking can pin the road as a through-traverse. Routing
+        # to `mid` alone makes GraphHopper solve two independent legs and drive
+        # the road up and back down when its best approach is one-ended.
+        doc["ends"] = [
+            [round(float(lats_np[0]), 6), round(float(lngs_np[0]), 6)],
+            [round(float(lats_np[-1]), 6), round(float(lngs_np[-1]), 6)],
+        ]
         self.buffer.append(doc)
         self.fun_rows.append((w.id, round(doc["fun_index"] * 100)))
         self.scored += 1

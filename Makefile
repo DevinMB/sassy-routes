@@ -1,6 +1,8 @@
 COMPOSE ?= docker compose
 
-.PHONY: help init seed up tunnel beta promote retune down restart logs ps test clean-graph
+# `pipeline` and `import-graph` must be here: ./pipeline is a real directory, so
+# without .PHONY make considers the target up to date and silently does nothing.
+.PHONY: help init seed up tunnel beta promote retune down restart logs ps test clean-graph pipeline import-graph
 
 help: ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'

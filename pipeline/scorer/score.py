@@ -152,13 +152,24 @@ def score_way(tags: dict, lats, lngs, junction_mask, elevs, cfg) -> dict | None:
         if speed_ok and density_ok:
             class_score = rc_cfg["residential_open"]
 
-    # Dead end: an endpoint that no other way shares. Overrides every promotion
-    # above — you cannot drive through a cul-de-sac, so it is not a fun road.
-    if not (bool(junction_mask[0]) and bool(junction_mask[-1])):
+    # Dead end: an endpoint that no other way shares. You cannot drive through
+    # a cul-de-sac, so it is not a fun road.
+    dead_end = not (bool(junction_mask[0]) and bool(junction_mask[-1]))
+    if dead_end:
         class_score = rc_cfg["dead_end"]
 
     blend = cfg["blend"]
     fun = blend["curvature"] * curv + blend["elevation"] * elev + blend["road_class"] * class_score
+
+    # Road-class gate: the veto the blend component above cannot express.
+    # `class_score` carries only blend.road_class (0.25) of the total, so
+    # `service: 0.0` docks a parking aisle a quarter of its score while its
+    # tight corners saturate the 0.60-weighted curvature term — it still came
+    # out at 0.755 and 79% of the seek index was service road. Classes that are
+    # never worth driving have to be able to lose on class alone.
+    class_gate = rc_cfg["gate"].get(base_class, 1.0)
+    if dead_end:
+        class_gate = min(class_gate, rc_cfg["gate"]["dead_end"])
 
     # surface gate (Miata rule)
     scfg = cfg["surface"]
@@ -182,7 +193,7 @@ def score_way(tags: dict, lats, lngs, junction_mask, elevs, cfg) -> dict | None:
     ):
         safety_gate *= safety["low_limit_tight_multiplier"]
 
-    fun_index = max(0.0, min(1.0, fun * surface_gate * safety_gate))
+    fun_index = max(0.0, min(1.0, fun * surface_gate * safety_gate * class_gate))
     return {
         "type": "segment",
         "fun_index": round(fun_index, 4),
@@ -194,5 +205,9 @@ def score_way(tags: dict, lats, lngs, junction_mask, elevs, cfg) -> dict | None:
             "elevation": round(elev, 4),
             "road_class": class_score,
         },
-        "gates": {"surface": surface_gate, "safety": round(safety_gate, 3)},
+        "gates": {
+            "surface": surface_gate,
+            "safety": round(safety_gate, 3),
+            "road_class": class_gate,
+        },
     }

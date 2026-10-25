@@ -68,6 +68,9 @@ def rank_targets(rows: list[dict], origin, destination, cfg_seek: dict) -> list[
         targets.append({
             "lat": mid[0],
             "lng": mid[1],
+            # Both ends of the way, when the pipeline recorded them — see
+            # via_points() for why the midpoint alone isn't enough.
+            "ends": value.get("ends"),
             "fun_index": value.get("fun", 0.0),
             "name": value.get("name"),
             "length_m": value.get("length_m", 0.0),
@@ -78,6 +81,40 @@ def rank_targets(rows: list[dict], origin, destination, cfg_seek: dict) -> list[
         target["value"] = target_value(target, cfg_seek)
     targets.sort(key=lambda t: -t["value"])
     return _dedupe_nearby(targets, cfg_seek["max_targets"])
+
+
+def via_points(target: dict, origin, destination) -> list[list[float]]:
+    """[lng, lat] via points that make the router drive *through* the road.
+
+    Pinning the way's midpoint — the original approach — routes origin→mid and
+    mid→destination as two independent legs. When the road's efficient approach
+    and exit lie on the same side, leg two simply retraces leg one, and the
+    turnaround happens at the pin: the "up a road and back down it, turning
+    around mid-road" shape, measured at up to 9.1 km of a single 74 km route.
+
+    Pinning both endpoints instead, in whichever order is cheaper to thread,
+    makes the road a through-traverse and removes the shape at its source
+    rather than detecting it afterwards.
+
+    Segments scored before the pipeline recorded `ends` fall back to the
+    midpoint, so seeking keeps working against an older `segments` database.
+    """
+    ends = target.get("ends")
+    if not ends or len(ends) != 2:
+        return [[target["lng"], target["lat"]]]
+
+    (a_lat, a_lng), (b_lat, b_lng) = ends
+    a_first = (
+        haversine_km(origin.lat, origin.lng, a_lat, a_lng)
+        + haversine_km(b_lat, b_lng, destination.lat, destination.lng)
+    )
+    b_first = (
+        haversine_km(origin.lat, origin.lng, b_lat, b_lng)
+        + haversine_km(a_lat, a_lng, destination.lat, destination.lng)
+    )
+    if b_first < a_first:
+        return [[b_lng, b_lat], [a_lng, a_lat]]
+    return [[a_lng, a_lat], [b_lng, b_lat]]
 
 
 def target_value(target: dict, cfg_seek: dict) -> float:
@@ -97,9 +134,15 @@ def earned_detour_s(target: dict, cfg_seek: dict) -> float:
 
     Separate from the hard `max_time_multiplier` ceiling: that stops absurd
     routes, this asks whether the trade is one a driver actually wants.
+
+    The floor is the owner's stated preference, and it matters most for exactly
+    the roads the per-km term underserves: a 900 m gem earns only ~17 min on
+    length alone, but "a longer, roundabout way beats a boring direct one" is
+    worth appreciably more than that to the person driving.
     """
     km = target["length_m"] / 1000.0
-    return cfg_seek["detour_minutes_per_km"] * km * target["fun_index"] * 60.0
+    earned_min = cfg_seek["detour_minutes_per_km"] * km * target["fun_index"]
+    return max(earned_min, cfg_seek["detour_floor_minutes"]) * 60.0
 
 
 def _dedupe_nearby(targets: list[dict], limit: int, min_gap_km: float = 1.0) -> list[dict]:
