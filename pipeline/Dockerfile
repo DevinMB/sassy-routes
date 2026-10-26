@@ -1,5 +1,5 @@
 # Built from the repo root (its tests read scoring.yaml): docker build -f pipeline/Dockerfile .
-FROM python:3.12.14-slim-trixie AS base
+FROM python:3.14.7-slim-trixie AS base
 # pyosmium links against system libexpat; Debian security fixes applied too.
 RUN apt-get update \
  && apt-get upgrade -y --no-install-recommends \
