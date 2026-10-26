@@ -4,6 +4,20 @@ COMPOSE ?= docker compose
 # without .PHONY make considers the target up to date and silently does nothing.
 .PHONY: help init seed up tunnel beta promote retune down restart logs ps test clean-graph pipeline import-graph
 
+# The sassy-routes VM runs production from DevinMB/homelab-stacks (stack-sync).
+# There, `up`, `tunnel`, `beta`, `promote` and `restart` would build local
+# images over the deployed ones, so they refuse: ship through git instead
+# (main = production, beta branch = /beta, promote = PR beta -> main).
+# The data jobs (pipeline, import-graph, retune, seed) work as before.
+PROD_HOST := sassy-routes
+define not_on_prod
+	@if [ "$$(hostname -s)" = "$(PROD_HOST)" ]; then \
+		echo "$(1): production on this VM deploys from git (homelab-stacks), not make."; \
+		echo "  ship: merge to main (production) or push to the beta branch (/beta); promote: PR beta -> main"; \
+		exit 1; \
+	fi
+endef
+
 help: ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
@@ -17,25 +31,30 @@ seed: init ## download the Michigan OSM extract (idempotent, resumable)
 	./infra/seed.sh
 
 up: ## build and start the whole stack (local; no tunnel)
+	$(call not_on_prod,up)
 	$(COMPOSE) up -d --build
 
 tunnel: ## build and start the whole stack incl. the Cloudflare tunnel
+	$(call not_on_prod,tunnel)
 	@token=$$(grep -E '^TUNNEL_TOKEN=.+' .env | cut -d= -f2-); \
 	if [ -z "$$token" ]; then \
 		echo "TUNNEL_TOKEN is empty in .env — paste the Cloudflare tunnel token first."; exit 1; \
 	fi
 	COMPOSE_PROFILES=tunnel $(COMPOSE) up -d --build
 
-beta: ## rebuild just the staging UI at /beta (production untouched)
+beta: ## local dev: rebuild just the staging UI at /beta
+	$(call not_on_prod,beta)
 	$(COMPOSE) up -d --build frontend-beta
 
-reload-proxy: ## apply Caddyfile edits (it's bind-mounted, so compose won't notice)
-	$(COMPOSE) restart caddy
+reload-proxy: ## apply edge proxy edits (local dev: rebuilds the edge image)
+	$(COMPOSE) up -d --build edge
 
-promote: ## ship what's on /beta to the production UI
+promote: ## local dev: rebuild the production UI
+	$(call not_on_prod,promote)
 	$(COMPOSE) up -d --build frontend
 
 down: ## stop the stack
+	$(call not_on_prod,down)
 	$(COMPOSE) down
 
 restart: down up ## restart the stack

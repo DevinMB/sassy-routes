@@ -2,7 +2,8 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    # main is production; beta is the staging UI at /beta (promote: PR beta -> main).
+    branches: [main, beta]
   workflow_dispatch:
 permissions:
   contents: write       # the gate merges Dependabot PRs
@@ -39,6 +40,25 @@ jobs:
       dockerfile: pipeline/Dockerfile
       smoke: false
       gate: false
+  # The edge proxy (nginx; routes /api, /beta and /).
+  edge:
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with:
+      image: ghcr.io/devinmb/sassy-routes-edge
+      context: infra/edge
+      gate: false
+  # The staging UI: built for the beta branch only, with its /beta/ base path,
+  # and published from beta pushes.
+  frontend-beta:
+    if: github.ref == 'refs/heads/beta' || github.base_ref == 'beta'
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with:
+      image: ghcr.io/devinmb/sassy-routes-frontend-beta
+      context: frontend
+      build-args: VITE_BASE=/beta/
+      push-ref: refs/heads/beta
+      gate: false
+  # Dependabot only targets main, so the gate never waits on frontend-beta.
   gate:
-    needs: [backend, frontend, pipeline]
+    needs: [backend, frontend, pipeline, edge]
     uses: DevinMB/workflows/.github/workflows/dependabot-gate.yml@main

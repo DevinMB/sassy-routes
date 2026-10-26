@@ -13,6 +13,15 @@ instead of a silently-broken link.
 Note: "use my location" requires a secure context — it works on `localhost`
 and on the HTTPS tunnel hostname, but not over plain `http://<lan-ip>`.
 
+## Production (since 2026-10-26)
+
+Production runs from **DevinMB/homelab-stacks** (`sites/home/sassy-routes`), deployed by `stack-sync` on the sassy-routes VM:
+
+- **Ship:** merge to `main`. CI builds and tests the images (`sassy-routes-backend`, `-frontend`, `-edge`, `-pipeline`), and production picks the new build up within about 10 minutes. `scoring.yaml` is baked into the backend image, so a scoring change ships the same way.
+- **Beta (`/beta`):** push to the `beta` branch; CI builds `sassy-routes-frontend-beta` and `/beta` serves it. **Promote:** open a PR from `beta` into `main`.
+- **Data jobs stay on the VM:** `make pipeline`, `make import-graph` and `make retune` run from the working copy as before (data lives in `/srv/stacks/sassy-routes/data`; `./data` points there). GraphHopper reads its config from this working copy, because a config change always needs a graph rebuild: pull `main` here first.
+- `make up`, `tunnel`, `beta`, `promote` and `down` refuse on the production VM; they are for local development.
+
 ## Stack
 
 | Piece | Tech |
@@ -77,7 +86,7 @@ Public URL: **https://sassyroutes.devinbutts.net** (already in
 
 1. Cloudflare Zero Trust → Networks → Tunnels → create a tunnel; copy its token.
 2. Add a **Public Hostname**: `sassyroutes.devinbutts.net` → type **HTTP**,
-   URL **`caddy:80`**. (HTTP, not HTTPS — Cloudflare terminates TLS at the edge
+   URL **`caddy:80`** (an alias of the nginx `edge` service). (HTTP, not HTTPS — Cloudflare terminates TLS at the edge
    and reaches Caddy over the internal docker network.)
 3. Paste the token into `TUNNEL_TOKEN=` in `.env`, then `make tunnel`.
 
