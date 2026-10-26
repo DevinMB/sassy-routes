@@ -86,7 +86,10 @@ services:
   # Offline segment scorer (Phase 1). Not part of `up` — run on demand:
   #   make pipeline    (full Michigan run: ~10-30 min, rebuilds `segments` db)
   pipeline:
-    build: ./pipeline
+    # Built from the repo root: the image's test stage needs scoring.yaml.
+    build:
+      context: .
+      dockerfile: pipeline/Dockerfile
     profiles: ["pipeline"]
     environment:
       APEX_COUCHDB_URL: http://${COUCHDB_USER:-apex}:${COUCHDB_PASSWORD:?set COUCHDB_PASSWORD in .env}@couchdb:5984

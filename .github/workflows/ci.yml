@@ -35,7 +35,8 @@ jobs:
     uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
     with:
       image: ghcr.io/devinmb/sassy-routes-pipeline
-      context: pipeline
+      context: .
+      dockerfile: pipeline/Dockerfile
       smoke: false
       gate: false
   gate:

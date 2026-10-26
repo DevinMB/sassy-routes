@@ -11,7 +11,9 @@ ARG VITE_BASE=/
 ENV VITE_BASE=$VITE_BASE
 RUN npm run build
 
-FROM caddy:2.11.6-alpine
+# 2.11.7 is built with Go 1.26.9, fixing four HIGH stdlib/x/net CVEs in 2.11.6;
+# taken before the usual two-week wait.
+FROM caddy:2.11.7-alpine
 # Alpine security fixes land between base image releases; CI's Trivy gate
 # fails on fixable HIGH and CRITICAL findings.
 RUN apk upgrade --no-cache
