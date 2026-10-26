@@ -1,17 +1,21 @@
 name: sassy-routes
 
 services:
-  # Edge reverse proxy. This is the single public entrypoint — the Cloudflare
-  # tunnel (when enabled) points at http://caddy:80. Rate limiting will live at
-  # the Cloudflare layer once the tunnel is up; stock Caddy has no built-in
-  # rate limiter (would need an xcaddy build).
-  caddy:
-    image: caddy:2.8-alpine
+  # LOCAL DEVELOPMENT. Production runs from DevinMB/homelab-stacks
+  # (sites/home/sassy-routes), deployed by stack-sync on the sassy-routes VM.
+  #
+  # Edge reverse proxy, the single public entrypoint (nginx; config in
+  # infra/edge/nginx.conf, baked into the image).
+  edge:
+    build: ./infra/edge
     restart: unless-stopped
     ports:
       - "8080:80"
-    volumes:
-      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    # The Cloudflare tunnel's public hostname targets http://caddy:80 (set in the
+    # Cloudflare dashboard); the alias keeps that working without touching it.
+    networks:
+      default:
+        aliases: [caddy]
     depends_on:
       - frontend
       - backend
@@ -133,7 +137,7 @@ services:
   # One-time Cloudflare setup (Zero Trust → Networks → Tunnels):
   #   1. Create a tunnel; copy its token into TUNNEL_TOKEN in .env.
   #   2. Add a Public Hostname: sassyroutes.devinbutts.net → service
-  #      http://caddy:80 (HTTP, not HTTPS — Cloudflare terminates TLS and the
+  #      http://caddy:80, an alias of the edge service (HTTP, not HTTPS — Cloudflare terminates TLS and the
   #      tunnel reaches Caddy over the internal docker network).
   cloudflared:
     image: cloudflare/cloudflared:2024.12.2
@@ -146,7 +150,7 @@ services:
     environment:
       TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
     depends_on:
-      - caddy
+      - edge
 
   # Kafka is deferred to Phase 3 (offline pipeline + apex.events analytics).
   # Guardrail: it must never sit in the user-facing routing path.
