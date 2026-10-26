@@ -1,0 +1,11 @@
+# Only the backend builds from the repo root; keep the data and local
+# environments out of its build context.
+data/
+**/node_modules
+**/.venv
+**/__pycache__
+**/.pytest_cache
+.git
+.env
+*.env
+frontend/dist
