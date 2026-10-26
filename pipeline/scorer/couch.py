@@ -1,14 +1,31 @@
 import logging
 
+from urllib.parse import unquote, urlsplit, urlunsplit
+
 import httpx
 
 logger = logging.getLogger("scorer.couch")
 
 
+def split_credentials(url: str) -> tuple[str, tuple[str, str] | None]:
+    """Move user:password out of a CouchDB URL into httpx basic auth.
+
+    httpx logs every request URL at INFO; with the credentials in the base URL
+    that put the CouchDB password in the logs. Kept separate, no URL carries it.
+    """
+    parts = urlsplit(url)
+    if not parts.username:
+        return url, None
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit(parts._replace(netloc=netloc)), (unquote(parts.username), unquote(parts.password or ""))
+
+
 class CouchWriter:
     def __init__(self, base_url: str, db: str):
         self._db = db
-        self._client = httpx.Client(base_url=base_url, timeout=60)
+        base, auth = split_credentials(base_url)
+        self._client = httpx.Client(base_url=base, auth=auth, timeout=60)
 
     def recreate_db(self) -> None:
         """Full rebuild each run: drop and recreate (pipeline is the only writer)."""
