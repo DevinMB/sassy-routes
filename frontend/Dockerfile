@@ -11,14 +11,14 @@ ARG VITE_BASE=/
 ENV VITE_BASE=$VITE_BASE
 RUN npm run build
 
-# 2.11.7 is built with Go 1.26.9, fixing four HIGH stdlib/x/net CVEs in 2.11.6;
-# taken before the usual two-week wait.
-FROM caddy:2.11.7-alpine
+# nginx stable serves the static build (Caddy 2.11.x still ships a Go runtime
+# with fixable HIGH CVEs, 2026-10-26).
+FROM nginx:1.30.6-alpine
 # Alpine security fixes land between base image releases; CI's Trivy gate
 # fails on fixable HIGH and CRITICAL findings.
 RUN apk upgrade --no-cache
-COPY Caddyfile /etc/caddy/Caddyfile
-COPY --from=build /app/dist /srv
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
 ARG COMMIT=unknown
 ENV COMMIT=$COMMIT
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
