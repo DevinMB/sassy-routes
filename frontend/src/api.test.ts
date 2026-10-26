@@ -42,7 +42,7 @@ describe('fetchRoute', () => {
   })
 
   it('explains a bodyless 502 from the proxy instead of showing a bare code', async () => {
-    // Caddy answers with no JSON body while the backend restarts
+    // The edge answers with no JSON body while the backend restarts
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 502 })))
     await expect(fetchRoute(origin, destination)).rejects.toThrow(/restarting/)
   })

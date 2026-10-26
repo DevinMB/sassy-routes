@@ -30,7 +30,7 @@ Production runs from **DevinMB/homelab-stacks** (`sites/home/sassy-routes`), dep
 | Backend | FastAPI + Pydantic v2 |
 | Frontend | React + Vite + Leaflet |
 | Storage | CouchDB (segment scores + route cache, from Phase 1) |
-| Edge | Caddy (Cloudflare tunnel target in production) |
+| Edge | nginx (Cloudflare tunnel target in production) |
 
 ## Quickstart (homelab / anywhere with Docker)
 
@@ -52,7 +52,7 @@ Useful:
 make test          # backend tests (local python venv, no docker needed)
 make beta          # rebuild the staging UI at /beta (production untouched)
 make promote       # ship what's on /beta to production
-make reload-proxy  # apply Caddyfile edits (bind-mounted, compose won't notice)
+make reload-proxy  # apply infra/edge/nginx.conf edits (rebuilds the edge image)
 make clean-graph   # force graph reimport after refreshing the extract
 make help          # everything else
 ```
@@ -75,7 +75,7 @@ backend. It's built from the same source tree with `VITE_BASE=/beta/`, so
 `make beta` rebuilds only that container — production keeps serving the last
 image `make up`/`make promote` built. Iterate on `/beta`, then `make promote`.
 
-Service layout: Caddy (`:8080`) fronts everything — `/api/*` → FastAPI,
+Service layout: the nginx edge (`:8080`) fronts everything — `/api/*` → FastAPI,
 everything else → the SPA. GraphHopper (`127.0.0.1:8989`) and CouchDB/Fauxton
 (`127.0.0.1:5984/_utils`) are bound to localhost for debugging only.
 
@@ -86,16 +86,16 @@ Public URL: **https://sassyroutes.devinbutts.net** (already in
 
 1. Cloudflare Zero Trust → Networks → Tunnels → create a tunnel; copy its token.
 2. Add a **Public Hostname**: `sassyroutes.devinbutts.net` → type **HTTP**,
-   URL **`caddy:80`** (an alias of the nginx `edge` service). (HTTP, not HTTPS — Cloudflare terminates TLS at the edge
-   and reaches Caddy over the internal docker network.)
+   URL **`edge:80`**. (HTTP, not HTTPS: Cloudflare terminates TLS and
+   reaches the edge over the internal docker network.)
 3. Paste the token into `TUNNEL_TOKEN=` in `.env`, then `make tunnel`.
 
 `make tunnel` starts the whole stack including the `cloudflared` service (it
 lives behind the `tunnel` compose profile, so a plain `make up` never touches
 it). To fold the tunnel into `make up` on the prod box, set
 `COMPOSE_PROFILES=tunnel` in `.env`. Once it's live, "use my location" works
-(HTTPS is a secure context) and rate limiting can ride on Cloudflare (stock
-Caddy has no built-in rate limiter).
+(HTTPS is a secure context) and rate limiting can ride on Cloudflare (the
+edge does no rate limiting itself).
 
 ## Development
 
