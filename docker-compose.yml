@@ -31,7 +31,10 @@ services:
     restart: unless-stopped
 
   backend:
-    build: ./backend
+    # Built from the repo root: the image's test stage needs scoring.yaml.
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
     restart: unless-stopped
     environment:
       APEX_GRAPHHOPPER_URL: http://graphhopper:8989

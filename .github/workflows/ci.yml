@@ -1,0 +1,43 @@
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write       # the gate merges Dependabot PRs
+  pull-requests: write  # ...and labels majors
+  packages: write       # push to GHCR on main
+  actions: write        # the gate starts the main build after merging
+jobs:
+  # Shared pipeline: github.com/DevinMB/workflows. Each image's tests run inside
+  # its own build (test stages), so no test-command here.
+  backend:
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with:
+      image: ghcr.io/devinmb/sassy-routes-backend
+      context: .
+      dockerfile: backend/Dockerfile
+      # No GraphHopper or CouchDB in CI: health still answers 200.
+      smoke-env: |
+        APEX_COUCHDB_URL=http://couchdb.invalid:5984
+        APEX_GRAPHHOPPER_URL=http://graphhopper.invalid:8989
+        APEX_GRAPHHOPPER_TIMEOUT_S=2
+      gate: false
+  frontend:
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with:
+      image: ghcr.io/devinmb/sassy-routes-frontend
+      context: frontend
+      gate: false
+  # The offline scorer: a batch job (make pipeline), so no smoke.
+  pipeline:
+    uses: DevinMB/workflows/.github/workflows/app-ci.yml@main
+    with:
+      image: ghcr.io/devinmb/sassy-routes-pipeline
+      context: pipeline
+      smoke: false
+      gate: false
+  gate:
+    needs: [backend, frontend, pipeline]
+    uses: DevinMB/workflows/.github/workflows/dependabot-gate.yml@main
