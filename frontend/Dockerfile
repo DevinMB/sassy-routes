@@ -13,7 +13,7 @@ RUN npm run build
 
 # nginx stable serves the static build (Caddy 2.11.x still ships a Go runtime
 # with fixable HIGH CVEs, 2026-10-26).
-FROM nginx:1.30.6-alpine
+FROM nginx:1.31.0-alpine
 # Alpine security fixes land between base image releases; CI's Trivy gate
 # fails on fixable HIGH and CRITICAL findings.
 RUN apk upgrade --no-cache
