@@ -4,7 +4,7 @@ CLAUDE-ref.md
 CLAUDE.md
 
 # runtime data (OSM extracts, graph cache, couchdb) — never commit
-data/
+/data
 
 # python
 __pycache__/
