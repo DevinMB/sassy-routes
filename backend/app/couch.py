@@ -6,14 +6,33 @@ down (same spirit as guardrail 3 for Kafka). Failures log and return None/{}.
 import logging
 import time
 
+from urllib.parse import unquote, urlsplit, urlunsplit
+
 import httpx
 
 logger = logging.getLogger("apex.couch")
 
 
+def split_credentials(url: str) -> tuple[str, tuple[str, str] | None]:
+    """Move user:password out of a CouchDB URL into httpx basic auth.
+
+    httpx logs every request URL at INFO; with the credentials in the base URL
+    that put the CouchDB password in the logs. Kept separate, no URL carries it.
+    """
+    parts = urlsplit(url)
+    if not parts.username:
+        return url, None
+    host = parts.hostname or ""
+    netloc = f"{host}:{parts.port}" if parts.port else host
+    return urlunsplit(parts._replace(netloc=netloc)), (unquote(parts.username), unquote(parts.password or ""))
+
+
 class CouchClient:
     def __init__(self, url: str | None, timeout_s: float):
-        self._client = httpx.Client(base_url=url, timeout=timeout_s) if url else None
+        self._client = None
+        if url:
+            base, auth = split_credentials(url)
+            self._client = httpx.Client(base_url=base, auth=auth, timeout=timeout_s)
         self._cache_db_ready = False
 
     def segment_docs(self, way_ids: list[int]) -> dict[int, dict] | None:
