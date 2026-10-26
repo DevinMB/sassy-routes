@@ -1,5 +1,5 @@
 # Built from the repo root (it needs scoring.yaml): docker build -f backend/Dockerfile .
-FROM python:3.12.14-slim-trixie AS base
+FROM python:3.14.7-slim-trixie AS base
 # Debian security fixes land between base image releases; CI's Trivy gate
 # fails on fixable HIGH and CRITICAL findings.
 RUN apt-get update \
