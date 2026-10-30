@@ -26,7 +26,7 @@ Production runs from **DevinMB/homelab-stacks** (`sites/home/sassy-routes`), dep
 
 | Piece | Tech |
 |---|---|
-| Routing | [GraphHopper](https://www.graphhopper.com/) 9 (self-hosted), Michigan OSM extract |
+| Routing | [GraphHopper](https://www.graphhopper.com/) 11 (self-hosted), Michigan OSM extract |
 | Backend | FastAPI + Pydantic v2 |
 | Frontend | React + Vite + Leaflet |
 | Storage | CouchDB (segment scores + route cache, from Phase 1) |

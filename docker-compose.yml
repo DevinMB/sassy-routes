@@ -53,7 +53,7 @@ services:
   # cached graph from ./data/graph-cache in seconds. After replacing the
   # extract, run `make clean-graph` to force a reimport.
   graphhopper:
-    image: israelhikingmap/graphhopper:9.1
+    image: israelhikingmap/graphhopper:11.0
     restart: unless-stopped
     # -o is required: the image's entrypoint derives its own graph location
     # (/data/default-gh, inside the image's anonymous /data volume) unless told
