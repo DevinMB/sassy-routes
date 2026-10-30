@@ -60,12 +60,18 @@ class GraphHopperClient:
         for multi-waypoint loops (take-me-for-a-drive) as well as single vias."""
         # NOTE: no `pass_through` here. It reads like the fix for "a via point
         # shouldn't force a U-turn if the road runs the other way", and it was
-        # in this body for exactly that reason, but GraphHopper 9.0 ignores it:
+        # in this body for exactly that reason, but GraphHopper ignores it —
+        # measured on 9.0, and measured again on 11.0 after that major bump:
         # the server accepts `"pass_through": "NOT_A_BOOL"` without complaint,
         # exactly as it accepts an invented field name, and routes identically
-        # with it true, false and absent. Sending it bought nothing except the
-        # false impression that via U-turns were handled. They are not — the
-        # caller has to price the shape it got back (see overlap.py).
+        # (distance, time and geometry alike) with it true, false and absent.
+        # The 11.0 check deliberately used two-way rural roads, where a U-turn
+        # is physically possible and the router demonstrably takes one (227 m
+        # out, 65 m back, a 358 m route); the flag does not stop it there
+        # either. A first attempt on freeway geometry proved nothing, since a
+        # divided highway forbids the U-turn anyway. Sending it bought nothing
+        # except the false impression that via U-turns were handled. They are
+        # not — the caller has to price the shape it got back (see overlap.py).
         body = {
             "points": points,
             "profile": "car",
