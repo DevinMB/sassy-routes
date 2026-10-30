@@ -14,8 +14,8 @@
     <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <!-- MUST match the serving image's GraphHopper version (graph format compat):
-         israelhikingmap/graphhopper:9.1 ships GraphHopper core 9.0 -->
-    <graphhopper.version>9.0</graphhopper.version>
+         israelhikingmap/graphhopper:11.0 ships GraphHopper core 11.0 -->
+    <graphhopper.version>11.0</graphhopper.version>
   </properties>
 
   <dependencies>

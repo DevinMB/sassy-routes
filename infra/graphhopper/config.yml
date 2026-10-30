@@ -1,4 +1,4 @@
-# GraphHopper 9.x config — Phase 1: fastest baseline via CH (instant), fun
+# GraphHopper 11.x config — Phase 1: fastest baseline via CH (instant), fun
 # candidates via per-request custom models on the LM-prepared profile.
 # Custom models only PENALIZE (priority multipliers ≤ 1), which keeps landmark
 # estimates admissible — never "reward" edges below base weight.
