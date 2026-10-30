@@ -299,8 +299,9 @@ seek:
   # and turns around — 122 m of overshoot ending in a 175° reversal. At the
   # rate above that is 3.7 min against a 25 min budget: waved straight through,
   # while being the most obviously-broken thing on the map. There is no
-  # engine-side fix to lean on either, since GraphHopper 9.0 silently ignores
-  # `pass_through` (see graphhopper.py).
+  # engine-side fix to lean on either, since GraphHopper silently ignores
+  # `pass_through` — measured on 9.0 and measured again on 11.0, so this
+  # pricing stays load-bearing across the upgrade (see graphhopper.py).
   #
   # Set above `detour_floor_minutes` minus a typical detour so a road earning
   # only the floor cannot keep a double-back, while a long, great road (a 3 km
