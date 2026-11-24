@@ -1,4 +1,4 @@
-FROM nginx:1.30.6-alpine
+FROM nginx:1.30.7-alpine
 # Alpine security fixes land between base image releases; CI's Trivy gate
 # fails on fixable HIGH and CRITICAL findings.
 RUN apk upgrade --no-cache
