@@ -21,7 +21,7 @@ updates:
       updates:
         update-types: [minor, patch]
   - package-ecosystem: docker
-    directories: [/backend, /frontend, /pipeline]
+    directories: [/backend, /frontend, /pipeline, /infra/edge]
     schedule: { interval: weekly, day: monday }
     cooldown: { default-days: 14 }
     groups:
